@@ -32,6 +32,7 @@ from .transformer_sentence_encoder import TransformerSentenceEncoder
 from .unfold import unfold1d
 from .transformer_layer import TransformerDecoderLayer, TransformerEncoderLayer
 from .vggblock import VGGBlock
+from .group_linear_layer import GroupLinearLayer
 
 __all__ = [
     'AdaptiveInput',
@@ -50,6 +51,7 @@ __all__ = [
     'gelu',
     'gelu_accurate',
     'GradMultiply',
+    'GroupLinearLayer',
     'GumbelVectorQuantizer',
     'KmeansVectorQuantizer',
     'LayerDropModuleList',

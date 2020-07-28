@@ -10,6 +10,7 @@ import torch
 from fairseq import metrics, search, tokenizer, utils
 from fairseq.data import data_utils, FairseqDataset, iterators, Dictionary
 
+print("FAIR SEQ TASK!")
 
 class FairseqTask(object):
     """
@@ -206,6 +207,7 @@ class FairseqTask(object):
         Returns:
             a :class:`~fairseq.models.BaseFairseqModel` instance
         """
+        print('fairseq build model!')
         from fairseq import models, quantization_utils
         model = models.build_model(args, self)
         if getattr(args, 'tpu', False):

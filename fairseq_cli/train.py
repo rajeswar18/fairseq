@@ -49,6 +49,7 @@ def main(
 ):
     utils.import_user_module(args)
 
+    print("MAIN FUNCTION")
     assert (
         args.max_tokens is not None or args.max_sentences is not None
     ), "Must specify batch size either with --max-tokens or --max-sentences"
@@ -73,11 +74,14 @@ def main(
     # Setup task, e.g., translation, language modeling, etc.
     task = tasks.setup_task(args)
 
+    print('task', task)
+
     # Load valid dataset (we load training data below, based on the latest checkpoint)
     for valid_sub_split in args.valid_subset.split(","):
         task.load_dataset(valid_sub_split, combine=False, epoch=1)
 
     # Build model and criterion
+    print('building model')
     model = task.build_model(args)
     criterion = task.build_criterion(args)
     logger.info(model)
@@ -119,6 +123,7 @@ def main(
     # Load the latest checkpoint if one is available and restore the
     # corresponding train iterator
     extra_state, epoch_itr = checkpoint_utils.load_checkpoint(args, trainer)
+    
     if args.tpu:
         import torch_xla.core.xla_model as xm
 
@@ -358,6 +363,7 @@ def distributed_main(
 def cli_main(modify_parser=None):
     parser = options.get_training_parser()
     args = options.parse_args_and_arch(parser, modify_parser=modify_parser)
+    print('cli main!')
     if args.profile:
         with torch.cuda.profiler.profile():
             with torch.autograd.profiler.emit_nvtx():
@@ -367,6 +373,7 @@ def cli_main(modify_parser=None):
 
 
 def cli_main_helper(args):
+    print('clip main helper')
     if args.distributed_init_method is None:
         distributed_utils.infer_init_method(args)
 

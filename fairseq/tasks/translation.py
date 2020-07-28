@@ -207,6 +207,7 @@ class TranslationTask(FairseqTask):
         self.src_dict = src_dict
         self.tgt_dict = tgt_dict
 
+
     @classmethod
     def setup_task(cls, args, **kwargs):
         """Setup the task (e.g., load dictionaries).
@@ -216,6 +217,8 @@ class TranslationTask(FairseqTask):
         """
         args.left_pad_source = options.eval_bool(args.left_pad_source)
         args.left_pad_target = options.eval_bool(args.left_pad_target)
+
+        print("SETUP TRANSLATION TASK")
 
         paths = utils.split_paths(args.data)
         assert len(paths) > 0
@@ -266,7 +269,10 @@ class TranslationTask(FairseqTask):
         return LanguagePairDataset(src_tokens, src_lengths, self.source_dictionary)
 
     def build_model(self, args):
+        
+        print('building model! in tasks')
         model = super().build_model(args)
+        
         if getattr(args, 'eval_bleu', False):
             assert getattr(args, 'eval_bleu_detok', None) is not None, (
                 '--eval-bleu-detok is required if using --eval-bleu; '

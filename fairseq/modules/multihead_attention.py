@@ -11,6 +11,8 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn import Parameter
 
+from fairseq.modules.group_linear_layer import GroupLinearLayer
+
 from fairseq import utils
 from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules.fairseq_dropout import FairseqDropout
@@ -38,6 +40,7 @@ class MultiheadAttention(nn.Module):
         encoder_decoder_attention=False,
         q_noise=0.0,
         qn_block_size=8,
+        nb=1
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -59,14 +62,22 @@ class MultiheadAttention(nn.Module):
         self.self_attention = self_attention
         self.encoder_decoder_attention = encoder_decoder_attention
 
+        print('using self attention in mha?', self_attention)
+
         assert not self.self_attention or self.qkv_same_dim, (
             "Self-attention requires query, key and " "value to be of the same size"
         )
 
+
+        #self.k_proj = quant_noise(GroupLinearLayer(self.kdim//nb, embed_dim//nb,nb, bias=bias), q_noise, qn_block_size)
+        #self.v_proj = quant_noise(GroupLinearLayer(self.vdim//nb, embed_dim//nb,nb, bias=bias), q_noise, qn_block_size)
+        #self.q_proj = quant_noise(GroupLinearLayer(embed_dim//nb, embed_dim//nb,nb, bias=bias), q_noise, qn_block_size)
+        #self.out_proj = quant_noise(GroupLinearLayer(embed_dim//nb, embed_dim//nb,nb, bias=bias), q_noise, qn_block_size)
+
+        #old
         self.k_proj = quant_noise(nn.Linear(self.kdim, embed_dim, bias=bias), q_noise, qn_block_size)
         self.v_proj = quant_noise(nn.Linear(self.vdim, embed_dim, bias=bias), q_noise, qn_block_size)
         self.q_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
-
         self.out_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
 
         if add_bias_kv:
@@ -101,6 +112,7 @@ class MultiheadAttention(nn.Module):
             nn.init.xavier_uniform_(self.q_proj.weight)
 
         nn.init.xavier_uniform_(self.out_proj.weight)
+        
         if self.out_proj.bias is not None:
             nn.init.constant_(self.out_proj.bias, 0.)
         if self.bias_k is not None:
@@ -140,6 +152,7 @@ class MultiheadAttention(nn.Module):
         """
         if need_head_weights:
             need_weights = True
+
 
         tgt_len, bsz, embed_dim = query.size()
         assert embed_dim == self.embed_dim
@@ -251,16 +264,23 @@ class MultiheadAttention(nn.Module):
             if "prev_key" in saved_state:
                 _prev_key = saved_state["prev_key"]
                 assert _prev_key is not None
-                prev_key = _prev_key.view(bsz * self.num_heads, -1, self.head_dim)
+                pk_bsz,_,seq_len,_ = _prev_key.shape
+                print('shape prev key', _prev_key.shape)
+                print('num heads', self.num_heads, 'head_dim', self.head_dim)
+                print('bsz', bsz, 'pk_bsz', pk_bsz)
+                prev_key = _prev_key.view(pk_bsz * self.num_heads, seq_len, self.head_dim)
                 if static_kv:
                     k = prev_key
                 else:
                     assert k is not None
+                    print('k shape', k.shape)
+                    print('prevkey shape', prev_key.shape)
                     k = torch.cat([prev_key, k], dim=1)
             if "prev_value" in saved_state:
                 _prev_value = saved_state["prev_value"]
                 assert _prev_value is not None
-                prev_value = _prev_value.view(bsz * self.num_heads, -1, self.head_dim)
+                pv_bsz,_,seq_len,_ = _prev_value.shape
+                prev_value = _prev_value.view(pv_bsz * self.num_heads, seq_len, self.head_dim)
                 if static_kv:
                     v = prev_value
                 else:

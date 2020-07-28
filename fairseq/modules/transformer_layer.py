@@ -9,9 +9,83 @@ import torch
 import torch.nn as nn
 from fairseq import utils
 from fairseq.modules import LayerNorm, MultiheadAttention
+from fairseq.modules.group_linear_layer import GroupLinearLayer
+
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from torch import Tensor
+
+def block_factored_attention(module, nb, query, kv, key_padding_mask=None, attn_mask=None, incremental_state=None, static_kv=False, need_weights=True, need_head_weights=False, do_blockatt=False):
+
+    incremental_state = None
+
+    pos_q,bs,nhid = query.shape
+    pos_kv,bs,nhid = kv.shape
+        
+    block_size = nhid // nb
+
+    #if attn_mask is not None:
+    #    print('encoder attn mask', attn_mask.shape)
+    #    raise Exception('attn mask not reshaped')
+    if key_padding_mask is not None:
+        key_padding_mask_timeatt = key_padding_mask.reshape((bs, 1, pos_kv)).repeat(1, nb, 1).reshape((bs*nb, pos_kv))
+        #print('key padding mask', key_padding_mask_timeatt.shape)
+    else:
+        key_padding_mask_timeatt = key_padding_mask
+
+    query_timeatt = query.reshape((pos_q, bs*nb, block_size))
+
+    kv_timeatt = kv.reshape((pos_kv, bs*nb, block_size))
+
+    if incremental_state is not None:
+        for key in incremental_state.keys():
+            print('key', key)
+            for sub_key in incremental_state[key].keys():
+                print('subkey')
+                if incremental_state[key][sub_key] is not None:
+                    print('val shape', incremental_state[key][sub_key].shape)
+
+    out_timeatt,attn_s = module(query=query_timeatt,
+            key=kv_timeatt,
+            value=kv_timeatt,
+            key_padding_mask=key_padding_mask_timeatt,
+            attn_mask=attn_mask,
+            incremental_state=incremental_state,
+            static_kv=static_kv,
+            need_weights=need_weights,
+            need_head_weights=need_head_weights)
+
+    if attn_s is not None:
+        if len(attn_s.shape) == 3:
+            attn_s = attn_s.reshape((bs, nb, attn_s.shape[1], attn_s.shape[2]))
+            attn_s = attn_s.mean(1)
+        elif len(attn_s.shape) == 4:
+            attn_s = attn_s.reshape((attn_s.shape[0], bs, nb, attn_s.shape[2], attn_s.shape[3]))
+            attn_s = attn_s.mean(2)
+
+    out_timeatt = out_timeatt.reshape((pos_q, bs, nb*block_size))
+
+    if do_blockatt:
+        query_blockatt = query.reshape((pos_q*bs, nb, block_size)).permute(1,0,2) # pos_q x bs x blocks*nhid.  poq_q*bs x blocks x nhid -> blocks x pos_q*bs x nhid
+        kv_blockatt = kv.reshape((pos_kv*bs, nb, block_size)).permute(1,0,2)
+
+        out_blockatt,_ = module(query=query_blockatt,
+            key=kv_blockatt,
+            value=kv_blockatt,
+            key_padding_mask=None,
+            attn_mask=None,
+            incremental_state=incremental_state,
+            static_kv=static_kv,
+            need_weights=need_weights,
+            need_head_weights=need_head_weights)
+
+        out_blockatt = out_blockatt.permute(1,0,2).reshape((pos_q, bs, nb*block_size))
+
+        out = out_timeatt + out_blockatt
+    else:
+        out = out_timeatt
+
+    return out, attn_s
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -34,12 +108,20 @@ class TransformerEncoderLayer(nn.Module):
         self.embed_dim = args.encoder_embed_dim
         self.quant_noise = getattr(args, "quant_noise_pq", 0)
         self.quant_noise_block_size = getattr(args, "quant_noise_pq_block_size", 8)
-        self.self_attn = self.build_self_attention(self.embed_dim, args)
+ 
+        print('encoder embed_dim', self.embed_dim)
+
+        self.nb = 4
+
+        self.self_attn = self.build_self_attention(self.embed_dim, args) #should divide embed_dim by nb.  Then raise embed_dim in args
         self.self_attn_layer_norm = LayerNorm(self.embed_dim)
         self.dropout_module = FairseqDropout(args.dropout, module_name=self.__class__.__name__)
         self.activation_fn = utils.get_activation_fn(
             activation=getattr(args, "activation_fn", "relu")
         )
+
+        print("SETUP TRANSFORMER LAYER", 'blocks', self.nb)
+
         activation_dropout_p = getattr(args, "activation_dropout", 0)
         if activation_dropout_p == 0:
             # for backwards compatibility with models that use args.relu_dropout
@@ -58,19 +140,23 @@ class TransformerEncoderLayer(nn.Module):
         self.final_layer_norm = LayerNorm(self.embed_dim)
 
     def build_fc1(self, input_dim, output_dim, q_noise, qn_block_size):
-        return quant_noise(nn.Linear(input_dim, output_dim), p=q_noise, block_size=qn_block_size)
+        print('quant noise', quant_noise)
+        return quant_noise(GroupLinearLayer(input_dim//self.nb, output_dim//self.nb, self.nb), p=q_noise, block_size=qn_block_size)
+        #return quant_noise(nn.Linear(input_dim, output_dim), p=q_noise, block_size=qn_block_size)
 
     def build_fc2(self, input_dim, output_dim, q_noise, qn_block_size):
-        return quant_noise(nn.Linear(input_dim, output_dim), p=q_noise, block_size=qn_block_size)
+        return quant_noise(GroupLinearLayer(input_dim//self.nb, output_dim//self.nb, self.nb), p=q_noise, block_size=qn_block_size)
+        #return quant_noise(nn.Linear(input_dim, output_dim), p=q_noise, block_size=qn_block_size)
 
     def build_self_attention(self, embed_dim, args):
         return MultiheadAttention(
-            embed_dim,
+            embed_dim//self.nb,
             args.encoder_attention_heads,
             dropout=args.attention_dropout,
             self_attention=True,
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
+            nb = self.nb
         )
 
     def upgrade_state_dict_named(self, state_dict, name):
@@ -114,13 +200,46 @@ class TransformerEncoderLayer(nn.Module):
         residual = x
         if self.normalize_before:
             x = self.self_attn_layer_norm(x)
-        x, _ = self.self_attn(
+        
+        #print('encoder self attn')
+        #print('x shape', x.shape)
+        
+        #pos,bs,nhid = x.shape
+        #block_size = nhid // self.nb
+        #print('x shape', x.shape, 'blocksize', block_size)
+        
+        #if attn_mask is not None:
+        #    print('encoder attn mask', attn_mask.shape)
+        #    raise Exception('attn mask not reshaped')
+        #if encoder_padding_mask is not None:
+        #    encoder_padding_mask_timeatt = encoder_padding_mask.reshape((bs, 1, pos)).repeat(1, self.nb, 1).reshape((bs*self.nb, pos))
+        #    print('encoder padding mask', encoder_padding_mask_timeatt.shape)        
+
+        #x_timeatt = x.reshape((pos, bs*self.nb, block_size))
+
+        #print('timeatt shape', x_timeatt.shape)
+        #print('pad shape', encoder_padding_mask.shape)
+
+        x,_ = block_factored_attention(self.self_attn,
+            nb=self.nb,
             query=x,
-            key=x,
-            value=x,
+            kv=x,
             key_padding_mask=encoder_padding_mask,
             attn_mask=attn_mask,
+            do_blockatt=True
         )
+
+        #o_timeatt = o_timeatt.reshape((pos, bs, self.nb*block_size))
+
+        #x, _ = self.self_attn(
+        #    query=x,
+        #    key=x,
+        #    value=x,
+        #    key_padding_mask=encoder_padding_mask,
+        #    attn_mask=attn_mask,
+        #)
+        #x = o_timeatt
+
         x = self.dropout_module(x)
         x = residual + x
         if not self.normalize_before:
@@ -130,8 +249,10 @@ class TransformerEncoderLayer(nn.Module):
         if self.normalize_before:
             x = self.final_layer_norm(x)
 
+        #print('fc1 on shape', x.shape, 'in encoder')
         x = self.activation_fn(self.fc1(x))
         x = self.activation_dropout_module(x)
+        #print('fc2 on shape', x.shape, 'in encoder')
         x = self.fc2(x)
         x = self.dropout_module(x)
         x = residual + x
@@ -168,6 +289,9 @@ class TransformerDecoderLayer(nn.Module):
 
         self.cross_self_attention = getattr(args, "cross_self_attention", False)
 
+        self.nb = 4
+        print("SETUP TRANSFORMER DECODER LAYER")
+
         self.self_attn = self.build_self_attention(
             self.embed_dim,
             args,
@@ -198,6 +322,8 @@ class TransformerDecoderLayer(nn.Module):
             self.encoder_attn = self.build_encoder_attention(self.embed_dim, args)
             self.encoder_attn_layer_norm = LayerNorm(self.embed_dim, export=export)
 
+        print('setup transformer layer decoder blocks: ', self.nb)
+
         self.fc1 = self.build_fc1(
             self.embed_dim, args.decoder_ffn_embed_dim, self.quant_noise, self.quant_noise_block_size
         )
@@ -211,14 +337,16 @@ class TransformerDecoderLayer(nn.Module):
         self.onnx_trace = False
 
     def build_fc1(self, input_dim, output_dim, q_noise, qn_block_size):
-        return quant_noise(nn.Linear(input_dim, output_dim), q_noise, qn_block_size)
+        return quant_noise(GroupLinearLayer(input_dim//self.nb, output_dim//self.nb, self.nb), q_noise, qn_block_size)
+        #return quant_noise(nn.Linear(input_dim, output_dim), q_noise, qn_block_size)
 
     def build_fc2(self, input_dim, output_dim, q_noise, qn_block_size):
-        return quant_noise(nn.Linear(input_dim, output_dim), q_noise, qn_block_size)
+        return quant_noise(GroupLinearLayer(input_dim//self.nb, output_dim//self.nb, self.nb), q_noise, qn_block_size)
+        #return quant_noise(nn.Linear(input_dim, output_dim), q_noise, qn_block_size)
 
     def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False):
         return MultiheadAttention(
-            embed_dim,
+            embed_dim//self.nb,
             args.decoder_attention_heads,
             dropout=args.attention_dropout,
             add_bias_kv=add_bias_kv,
@@ -226,18 +354,28 @@ class TransformerDecoderLayer(nn.Module):
             self_attention=not getattr(args, "cross_self_attention", False),
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
+            nb = self.nb
         )
 
     def build_encoder_attention(self, embed_dim, args):
+        kdim = getattr(args, "encoder_embed_dim", None)
+        vdim = getattr(args, "encoder_embed_dim", None)
+
+        if kdim is not None:
+            kdim = kdim//self.nb
+        if vdim is not None:
+            vdim = vdim//self.nb
+
         return MultiheadAttention(
-            embed_dim,
+            embed_dim//self.nb,
             args.decoder_attention_heads,
-            kdim=getattr(args, "encoder_embed_dim", None),
-            vdim=getattr(args, "encoder_embed_dim", None),
+            kdim=kdim,
+            vdim=vdim,
             dropout=args.attention_dropout,
             encoder_decoder_attention=True,
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
+            nb = self.nb
         )
 
     def prepare_for_onnx_export_(self):
@@ -271,6 +409,8 @@ class TransformerDecoderLayer(nn.Module):
         """
         if need_head_weights:
             need_attn = True
+
+        #print("TRANSFORMER LAYER")
 
         residual = x
         if self.normalize_before:
@@ -310,15 +450,24 @@ class TransformerDecoderLayer(nn.Module):
         else:
             y = x
 
-        x, attn = self.self_attn(
+        #print('running self attention layer')
+        #print('query shape', x.shape)
+        #print('key val shape', y.shape)
+        #if self_attn_padding_mask is not None:
+        #    print('padding mask shape', self_attn_padding_mask.shape)
+        #if self_attn_mask is not None:
+        #    print('attn mask shape', self_attn_mask.shape)
+        x, attn = block_factored_attention(self.self_attn,
+            nb=self.nb,
             query=x,
-            key=y,
-            value=y,
+            kv=y,
             key_padding_mask=self_attn_padding_mask,
             incremental_state=incremental_state,
             need_weights=False,
             attn_mask=self_attn_mask,
+            do_blockatt=True
         )
+
         x = self.dropout_module(x)
         x = residual + x
         if not self.normalize_before:
@@ -338,16 +487,21 @@ class TransformerDecoderLayer(nn.Module):
                     saved_state["prev_key_padding_mask"] = prev_attn_state[2]
                 assert incremental_state is not None
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
-
-            x, attn = self.encoder_attn(
+            
+            #print('encoder attn in decoder')
+            #print('encoder out shape', encoder_out.shape)
+            #print('encoder padding mask', encoder_padding_mask)
+            #print('running encoder attn!')
+            x, attn = block_factored_attention(self.encoder_attn, 
+                nb=self.nb,
                 query=x,
-                key=encoder_out,
-                value=encoder_out,
+                kv=encoder_out,
                 key_padding_mask=encoder_padding_mask,
                 incremental_state=incremental_state,
                 static_kv=True,
                 need_weights=need_attn or (not self.training and self.need_attn),
                 need_head_weights=need_head_weights,
+                do_blockatt=False
             )
             x = self.dropout_module(x)
             x = residual + x
@@ -358,6 +512,7 @@ class TransformerDecoderLayer(nn.Module):
         if self.normalize_before:
             x = self.final_layer_norm(x)
 
+        #print('running fc1, fc2')
         x = self.activation_fn(self.fc1(x))
         x = self.activation_dropout_module(x)
         x = self.fc2(x)
@@ -389,3 +544,6 @@ def Linear(in_features, out_features, bias=True):
     if bias:
         nn.init.constant_(m.bias, 0.0)
     return m
+
+
+
