@@ -43,7 +43,7 @@ class Attention(nn.Module):
         q = self.query_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
         k = self.key_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
         v = self.value_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
-
+        
         q = q.transpose(2,3) * self.scale
         k = k.transpose(2,3)
         v = v.transpose(2,3)

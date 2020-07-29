@@ -166,6 +166,7 @@ class MultiheadAttention(nn.Module):
             # A workaround for quantization to work. Otherwise JIT compilation
             # treats bias in linear module as method.
             and not torch.jit.is_scripting()
+            and False
         ):
             assert key is not None and value is not None
             attn, attn_weights = F.multi_head_attention_forward(
@@ -209,6 +210,14 @@ class MultiheadAttention(nn.Module):
                     key = value = None
         else:
             saved_state = None
+
+        #print('about to run projection layers')
+        #print('q shape', query.shape, 'key shape', key.shape, 'value shape', value.shape)
+
+        query = query.reshape((tgt_len, bsz*nb, embed_dim))
+        if key is not None:
+            key = key.reshape((src_len, bsz*nb, embed_dim))
+            value = value.reshape((src_len, bsz*nb, embed_dim))
 
         if self.self_attention:
             q = self.q_proj(query)
@@ -259,12 +268,16 @@ class MultiheadAttention(nn.Module):
                 .view(src_len, bsz * self.nblocks * self.num_heads, self.head_dim)
                 .transpose(0, 1)
             )
+            print('making k', k.shape)
         if v is not None:
             v = (
                 v.contiguous()
                 .view(src_len, bsz * self.nblocks * self.num_heads, self.head_dim)
                 .transpose(0, 1)
             )
+
+        #these steps make q,k,v
+        print('ran projection layers', q.shape)
 
         if saved_state is not None:
             # saved states are stored with shape (bsz, num_heads, seq_len, head_dim)
@@ -364,7 +377,6 @@ class MultiheadAttention(nn.Module):
             attn_weights = attn_weights.view(bsz * self.nblocks * self.num_heads, tgt_len, src_len)
 
         if before_softmax:
-            print("HERE")
             return attn_weights, v
 
         attn_weights_float = utils.softmax(
@@ -382,6 +394,7 @@ class MultiheadAttention(nn.Module):
             attn = attn.contiguous().view(tgt_len, bsz * self.nblocks, self.embed_dim)
         else:
             attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz * self.nblocks, self.embed_dim)
+        
         attn = self.out_proj(attn)
         attn_weights: Optional[Tensor] = None
         if need_weights:

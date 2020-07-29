@@ -1,6 +1,7 @@
 #!/bin/bash
 
 rm -rf checkpoints/
+
 #CUDA_VISIBLE_DEVICES=0
 python3 fairseq_cli/train.py \
     data-bin/iwslt14.tokenized.de-en \
