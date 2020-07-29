@@ -211,13 +211,10 @@ class MultiheadAttention(nn.Module):
         else:
             saved_state = None
 
-        #print('about to run projection layers')
-        #print('q shape', query.shape, 'key shape', key.shape, 'value shape', value.shape)
-
-        query = query.reshape((tgt_len, bsz*nb, embed_dim))
+        query = query.reshape((tgt_len, bsz * self.nblocks, self.embed_dim))
         if key is not None:
-            key = key.reshape((src_len, bsz*nb, embed_dim))
-            value = value.reshape((src_len, bsz*nb, embed_dim))
+            key = key.reshape((src_len, bsz * self.nblocks, self.embed_dim))
+            value = value.reshape((src_len, bsz * self.nblocks, self.embed_dim))
 
         if self.self_attention:
             q = self.q_proj(query)
