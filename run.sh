@@ -2,7 +2,7 @@
 
 module load python/3.6
 
-export PYTHONPATH=$PYTHONPATH:/home/lambalex/fairseq/
+export PYTHONPATH=$PYTHONPATH:~/fairseq/
 #export PYTHONPATH=$PYTHONPATH:/home/lambalex/fairseq/fairseq/
 
 rm checkpoints/*
@@ -21,3 +21,5 @@ CUDA_VISIBLE_DEVICES=0 python3 fairseq_cli/train.py \
     --eval-bleu-remove-bpe \
     --eval-bleu-print-samples \
     --best-checkpoint-metric bleu --maximize-best-checkpoint-metric
+
+

@@ -153,10 +153,16 @@ class MultiheadAttention(nn.Module):
         if need_head_weights:
             need_weights = True
 
+        nb = 4
+        print('shapes query', query.shape)
+        tgt_len, bsz, nhid = query.size()
+        embed_dim = nhid//nb
 
-        tgt_len, bsz, embed_dim = query.size()
+        if value is not None:
+            src_len, _, _ = value.size()
+
         assert embed_dim == self.embed_dim
-        assert list(query.size()) == [tgt_len, bsz, embed_dim]
+        assert list(query.size()) == [tgt_len, bsz, embed_dim*nb]
 
         if (
             not self.onnx_trace
@@ -166,6 +172,7 @@ class MultiheadAttention(nn.Module):
             # A workaround for quantization to work. Otherwise JIT compilation
             # treats bias in linear module as method.
             and not torch.jit.is_scripting()
+            and False
         ):
             assert key is not None and value is not None
             return F.multi_head_attention_forward(
@@ -202,6 +209,14 @@ class MultiheadAttention(nn.Module):
                     key = value = None
         else:
             saved_state = None
+
+        #print('about to run projection layers')
+        #print('q shape', query.shape, 'key shape', key.shape, 'value shape', value.shape)
+
+        query = query.reshape((tgt_len, bsz*nb, embed_dim))
+        if key is not None:
+            key = key.reshape((src_len, bsz*nb, embed_dim))
+            value = value.reshape((src_len, bsz*nb, embed_dim))
 
         if self.self_attention:
             q = self.q_proj(query)
@@ -243,21 +258,25 @@ class MultiheadAttention(nn.Module):
 
         q = (
             q.contiguous()
-            .view(tgt_len, bsz * self.num_heads, self.head_dim)
+            .view(tgt_len, bsz * nb * self.num_heads, self.head_dim)
             .transpose(0, 1)
         )
         if k is not None:
             k = (
                 k.contiguous()
-                .view(-1, bsz * self.num_heads, self.head_dim)
+                .view(-1, bsz * nb * self.num_heads, self.head_dim)
                 .transpose(0, 1)
             )
+            print('making k', k.shape)
         if v is not None:
             v = (
                 v.contiguous()
-                .view(-1, bsz * self.num_heads, self.head_dim)
+                .view(-1, bsz * nb * self.num_heads, self.head_dim)
                 .transpose(0, 1)
             )
+
+        #these steps make q,k,v
+        print('ran projection layers', q.shape)
 
         if saved_state is not None:
             # saved states are stored with shape (bsz, num_heads, seq_len, head_dim)
@@ -265,22 +284,17 @@ class MultiheadAttention(nn.Module):
                 _prev_key = saved_state["prev_key"]
                 assert _prev_key is not None
                 pk_bsz,_,seq_len,_ = _prev_key.shape
-                print('shape prev key', _prev_key.shape)
-                print('num heads', self.num_heads, 'head_dim', self.head_dim)
-                print('bsz', bsz, 'pk_bsz', pk_bsz)
-                prev_key = _prev_key.view(pk_bsz * self.num_heads, seq_len, self.head_dim)
+                prev_key = _prev_key.view(pk_bsz * nb * self.num_heads, seq_len, self.head_dim)
                 if static_kv:
                     k = prev_key
                 else:
                     assert k is not None
-                    print('k shape', k.shape)
-                    print('prevkey shape', prev_key.shape)
                     k = torch.cat([prev_key, k], dim=1)
             if "prev_value" in saved_state:
                 _prev_value = saved_state["prev_value"]
                 assert _prev_value is not None
                 pv_bsz,_,seq_len,_ = _prev_value.shape
-                prev_value = _prev_value.view(pv_bsz * self.num_heads, seq_len, self.head_dim)
+                prev_value = _prev_value.view(pv_bsz * nb * self.num_heads, seq_len, self.head_dim)
                 if static_kv:
                     v = prev_value
                 else:
@@ -298,8 +312,8 @@ class MultiheadAttention(nn.Module):
                 static_kv=static_kv,
             )
 
-            saved_state["prev_key"] = k.view(bsz, self.num_heads, -1, self.head_dim)
-            saved_state["prev_value"] = v.view(bsz, self.num_heads, -1, self.head_dim)
+            saved_state["prev_key"] = k.view(bsz, nb*self.num_heads, -1, self.head_dim)
+            saved_state["prev_value"] = v.view(bsz, nb*self.num_heads, -1, self.head_dim)
             saved_state["prev_key_padding_mask"] = key_padding_mask
             # In this branch incremental_state is never None
             assert incremental_state is not None
@@ -339,7 +353,7 @@ class MultiheadAttention(nn.Module):
         attn_weights = torch.bmm(q, k.transpose(1, 2))
         attn_weights = MultiheadAttention.apply_sparse_mask(attn_weights, tgt_len, src_len, bsz)
 
-        assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
+        assert list(attn_weights.size()) == [bsz * nb * self.num_heads, tgt_len, src_len]
 
         if attn_mask is not None:
             attn_mask = attn_mask.unsqueeze(0)
@@ -349,7 +363,7 @@ class MultiheadAttention(nn.Module):
 
         if key_padding_mask is not None:
             # don't attend to padding symbols
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.view(bsz, nb*self.num_heads, tgt_len, src_len)
             if not self.tpu:
                 attn_weights = attn_weights.masked_fill(
                     key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
@@ -359,7 +373,7 @@ class MultiheadAttention(nn.Module):
                 attn_weights = attn_weights.transpose(0, 2)
                 attn_weights = attn_weights.masked_fill(key_padding_mask, float('-inf'))
                 attn_weights = attn_weights.transpose(0, 2)
-            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.view(bsz * nb * self.num_heads, tgt_len, src_len)
 
         if before_softmax:
             return attn_weights, v
@@ -372,22 +386,24 @@ class MultiheadAttention(nn.Module):
 
         assert v is not None
         attn = torch.bmm(attn_probs, v)
-        assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
+        assert list(attn.size()) == [bsz * nb * self.num_heads, tgt_len, self.head_dim]
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)
             # the transpose is a no-op copy before view, thus unnecessary
-            attn = attn.contiguous().view(tgt_len, bsz, embed_dim)
+            attn = attn.contiguous().view(tgt_len, bsz * nb, embed_dim)
         else:
-            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz * nb, embed_dim)
         attn = self.out_proj(attn)
         attn_weights: Optional[Tensor] = None
         if need_weights:
             attn_weights = attn_weights_float.view(
-                bsz, self.num_heads, tgt_len, src_len
+                bsz, nb * self.num_heads, tgt_len, src_len
             ).transpose(1, 0)
             if not need_head_weights:
                 # average attention weights over heads
                 attn_weights = attn_weights.mean(dim=0)
+
+        attn = attn.reshape((tgt_len, bsz, nb*embed_dim))
 
         return attn, attn_weights
 

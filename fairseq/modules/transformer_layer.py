@@ -17,7 +17,7 @@ from torch import Tensor
 
 def block_factored_attention(module, nb, query, kv, key_padding_mask=None, attn_mask=None, incremental_state=None, static_kv=False, need_weights=True, need_head_weights=False, do_blockatt=False):
 
-    incremental_state = None
+    #incremental_state = None
 
     pos_q,bs,nhid = query.shape
     pos_kv,bs,nhid = kv.shape
@@ -27,63 +27,63 @@ def block_factored_attention(module, nb, query, kv, key_padding_mask=None, attn_
     #if attn_mask is not None:
     #    print('encoder attn mask', attn_mask.shape)
     #    raise Exception('attn mask not reshaped')
-    if key_padding_mask is not None:
-        key_padding_mask_timeatt = key_padding_mask.reshape((bs, 1, pos_kv)).repeat(1, nb, 1).reshape((bs*nb, pos_kv))
-        #print('key padding mask', key_padding_mask_timeatt.shape)
-    else:
-        key_padding_mask_timeatt = key_padding_mask
+    #if key_padding_mask is not None:
+    #    key_padding_mask_timeatt = key_padding_mask.reshape((bs, 1, pos_kv)).repeat(1, nb, 1).reshape((bs*nb, pos_kv))
+    #    #print('key padding mask', key_padding_mask_timeatt.shape)
+    #else:
+    #    key_padding_mask_timeatt = key_padding_mask
 
-    query_timeatt = query.reshape((pos_q, bs*nb, block_size))
+    #query_timeatt = query.reshape((pos_q, bs*nb, block_size))
 
-    kv_timeatt = kv.reshape((pos_kv, bs*nb, block_size))
+    #kv_timeatt = kv.reshape((pos_kv, bs*nb, block_size))
 
-    if incremental_state is not None:
-        for key in incremental_state.keys():
-            print('key', key)
-            for sub_key in incremental_state[key].keys():
-                print('subkey')
-                if incremental_state[key][sub_key] is not None:
-                    print('val shape', incremental_state[key][sub_key].shape)
+    #if incremental_state is not None:
+    #    for key in incremental_state.keys():
+    #        print('key', key)
+    #        for sub_key in incremental_state[key].keys():
+    #            print('subkey')
+    #            if incremental_state[key][sub_key] is not None:
+    #                print('val shape', incremental_state[key][sub_key].shape)
 
-    out_timeatt,attn_s = module(query=query_timeatt,
-            key=kv_timeatt,
-            value=kv_timeatt,
-            key_padding_mask=key_padding_mask_timeatt,
+    out,attn_s = module(query=query,
+            key=kv,
+            value=kv,
+            key_padding_mask=key_padding_mask,
             attn_mask=attn_mask,
             incremental_state=incremental_state,
             static_kv=static_kv,
             need_weights=need_weights,
             need_head_weights=need_head_weights)
 
-    if attn_s is not None:
-        if len(attn_s.shape) == 3:
-            attn_s = attn_s.reshape((bs, nb, attn_s.shape[1], attn_s.shape[2]))
-            attn_s = attn_s.mean(1)
-        elif len(attn_s.shape) == 4:
-            attn_s = attn_s.reshape((attn_s.shape[0], bs, nb, attn_s.shape[2], attn_s.shape[3]))
-            attn_s = attn_s.mean(2)
+    #if attn_s is not None:
+    #    if len(attn_s.shape) == 3:
+    #        attn_s = attn_s.reshape((bs, nb, attn_s.shape[1], attn_s.shape[2]))
+    #        attn_s = attn_s.mean(1)
+    #    elif len(attn_s.shape) == 4:
+    #        attn_s = attn_s.reshape((attn_s.shape[0], bs, nb, attn_s.shape[2], attn_s.shape[3]))
+    #        attn_s = attn_s.mean(2)
 
-    out_timeatt = out_timeatt.reshape((pos_q, bs, nb*block_size))
+    #out_timeatt = out_timeatt.reshape((pos_q, bs, nb*block_size))
 
-    if do_blockatt:
-        query_blockatt = query.reshape((pos_q*bs, nb, block_size)).permute(1,0,2) # pos_q x bs x blocks*nhid.  poq_q*bs x blocks x nhid -> blocks x pos_q*bs x nhid
-        kv_blockatt = kv.reshape((pos_kv*bs, nb, block_size)).permute(1,0,2)
+    #if do_blockatt and False:
+    #    query_blockatt = query.reshape((pos_q*bs, nb, block_size)).permute(1,0,2) # pos_q x bs x blocks*nhid.  poq_q*bs x blocks x nhid -> blocks x pos_q*bs x nhid
+    #    kv_blockatt = kv.reshape((pos_kv*bs, nb, block_size)).permute(1,0,2)
 
-        out_blockatt,_ = module(query=query_blockatt,
-            key=kv_blockatt,
-            value=kv_blockatt,
-            key_padding_mask=None,
-            attn_mask=None,
-            incremental_state=incremental_state,
-            static_kv=static_kv,
-            need_weights=need_weights,
-            need_head_weights=need_head_weights)
+    #    out_blockatt,_ = module(query=query_blockatt,
+    #        key=kv_blockatt,
+    #        value=kv_blockatt,
+    #        key_padding_mask=None,
+    #        attn_mask=None,
+    #        incremental_state=incremental_state,
+    #        static_kv=static_kv,
+    #        need_weights=need_weights,
+    #        need_head_weights=need_head_weights)
 
-        out_blockatt = out_blockatt.permute(1,0,2).reshape((pos_q, bs, nb*block_size))
+    #    out_blockatt = out_blockatt.permute(1,0,2).reshape((pos_q, bs, nb*block_size))
 
-        out = out_timeatt + out_blockatt
-    else:
-        out = out_timeatt
+    #    out = out_timeatt + out_blockatt
+    #else:
+    #    out = out_timeatt
 
     return out, attn_s
 
