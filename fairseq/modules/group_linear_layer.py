@@ -7,20 +7,23 @@ import math
 
 class GroupLinearLayer(nn.Module):
 
-    def __init__(self, din, dout, num_blocks, bias=False):
+    def __init__(self, din, dout, num_blocks, bias=True):
         super(GroupLinearLayer, self).__init__()
         self.nb = num_blocks
         self.dout = dout
 
-        gain = 1.0 / math.sqrt(2)
-        a = gain * math.sqrt(6.0 / (din + dout))
+        a = 1. / math.sqrt(dout)
+
+        #gain = 1.0 / math.sqrt(2)
+        #a = gain * math.sqrt(6.0 / (din + dout))
 
         self.weight = nn.Parameter(torch.FloatTensor(num_blocks,din,dout).uniform_(-a,a))
 
         self.bias = bias
 
         if bias is True:
-            self.bias = nn.Parameter(torch.zeros(dout*num_blocks))
+            self.bias = nn.Parameter(torch.FloatTensor(num_blocks,dout).uniform_(-a,a))
+            #self.bias = nn.Parameter(torch.zeros(dout*num_blocks))
         else:
             self.bias = None
 
@@ -35,10 +38,14 @@ class GroupLinearLayer(nn.Module):
         x = x.permute(1,0,2)
         x = torch.bmm(x,self.weight)
         x = x.permute(1,0,2)
-        x = x.reshape((ts, bs, self.dout*self.nb))
         
         if not self.bias is None:
-            x += self.bias
+            x = x + self.bias
+
+        x = x.reshape((ts, bs, self.dout*self.nb))
+        
+        #if not self.bias is None:
+        #    x += self.bias
 
         return x
 

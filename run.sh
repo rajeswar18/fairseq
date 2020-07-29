@@ -1,13 +1,8 @@
 #!/bin/bash
 
-module load python/3.6
-
-export PYTHONPATH=$PYTHONPATH:/home/lambalex/fairseq/
-#export PYTHONPATH=$PYTHONPATH:/home/lambalex/fairseq/fairseq/
-
-rm checkpoints/*
-
-CUDA_VISIBLE_DEVICES=0 python3 fairseq_cli/train.py \
+rm -rf checkpoints/
+#CUDA_VISIBLE_DEVICES=0
+python3 fairseq_cli/train.py \
     data-bin/iwslt14.tokenized.de-en \
     --arch transformer_iwslt_de_en --share-decoder-input-output-embed \
     --optimizer adam --adam-betas '(0.9, 0.98)' --clip-norm 0.0 \
@@ -20,4 +15,4 @@ CUDA_VISIBLE_DEVICES=0 python3 fairseq_cli/train.py \
     --eval-bleu-detok moses \
     --eval-bleu-remove-bpe \
     --eval-bleu-print-samples \
-    --best-checkpoint-metric bleu --maximize-best-checkpoint-metric
+    --best-checkpoint-metric bleu --maximize-best-checkpoint-metric > out.txt

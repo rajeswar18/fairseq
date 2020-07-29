@@ -11,8 +11,6 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn import Parameter
 
-from fairseq.modules.group_linear_layer import GroupLinearLayer
-
 from fairseq import utils
 from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules.fairseq_dropout import FairseqDropout
@@ -22,7 +20,6 @@ from fairseq.modules.quant_noise import quant_noise
 @with_incremental_state
 class MultiheadAttention(nn.Module):
     """Multi-headed attention.
-
     See "Attention Is All You Need" for more details.
     """
 
@@ -40,10 +37,11 @@ class MultiheadAttention(nn.Module):
         encoder_decoder_attention=False,
         q_noise=0.0,
         qn_block_size=8,
-        nb=1
+        nblocks=1
     ):
         super().__init__()
         self.embed_dim = embed_dim
+        self.nblocks = nblocks
         self.kdim = kdim if kdim is not None else embed_dim
         self.vdim = vdim if vdim is not None else embed_dim
         self.qkv_same_dim = self.kdim == embed_dim and self.vdim == embed_dim
@@ -62,22 +60,14 @@ class MultiheadAttention(nn.Module):
         self.self_attention = self_attention
         self.encoder_decoder_attention = encoder_decoder_attention
 
-        print('using self attention in mha?', self_attention)
-
         assert not self.self_attention or self.qkv_same_dim, (
             "Self-attention requires query, key and " "value to be of the same size"
         )
 
-
-        #self.k_proj = quant_noise(GroupLinearLayer(self.kdim//nb, embed_dim//nb,nb, bias=bias), q_noise, qn_block_size)
-        #self.v_proj = quant_noise(GroupLinearLayer(self.vdim//nb, embed_dim//nb,nb, bias=bias), q_noise, qn_block_size)
-        #self.q_proj = quant_noise(GroupLinearLayer(embed_dim//nb, embed_dim//nb,nb, bias=bias), q_noise, qn_block_size)
-        #self.out_proj = quant_noise(GroupLinearLayer(embed_dim//nb, embed_dim//nb,nb, bias=bias), q_noise, qn_block_size)
-
-        #old
         self.k_proj = quant_noise(nn.Linear(self.kdim, embed_dim, bias=bias), q_noise, qn_block_size)
         self.v_proj = quant_noise(nn.Linear(self.vdim, embed_dim, bias=bias), q_noise, qn_block_size)
         self.q_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
+
         self.out_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
 
         if add_bias_kv:
@@ -112,7 +102,6 @@ class MultiheadAttention(nn.Module):
             nn.init.xavier_uniform_(self.q_proj.weight)
 
         nn.init.xavier_uniform_(self.out_proj.weight)
-        
         if self.out_proj.bias is not None:
             nn.init.constant_(self.out_proj.bias, 0.)
         if self.bias_k is not None:
@@ -134,7 +123,6 @@ class MultiheadAttention(nn.Module):
         need_head_weights: bool = False,
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """Input shape: Time x Batch x Channel
-
         Args:
             key_padding_mask (ByteTensor, optional): mask to exclude
                 keys that are pads, of shape `(batch, src_len)`, where
@@ -150,13 +138,25 @@ class MultiheadAttention(nn.Module):
                 weights for each head. Implies *need_weights*. Default:
                 return the average attention weights over all heads.
         """
+        tgt_len, bsz, embed_dim = query.size()
+ 
+        query = query.reshape(tgt_len, bsz * self.nblocks, self.embed_dim)
+
+        if key is not None:
+            src_len = key.shape[0]
+            key = key.reshape(src_len, bsz * self.nblocks, self.embed_dim)
+            value = value.reshape(src_len, bsz * self.nblocks, self.embed_dim)
+
+        kp_mask = None
+        if key_padding_mask is not None:
+            b, s = key_padding_mask.shape
+            kp_mask = key_padding_mask.view(b,1,s).repeat(1,self.nblocks,1).view(b*self.nblocks,s)
+        
         if need_head_weights:
             need_weights = True
 
-
-        tgt_len, bsz, embed_dim = query.size()
-        assert embed_dim == self.embed_dim
-        assert list(query.size()) == [tgt_len, bsz, embed_dim]
+        assert embed_dim == self.embed_dim * self.nblocks
+        assert list(query.size()) == [tgt_len, bsz * self.nblocks, self.embed_dim]
 
         if (
             not self.onnx_trace
@@ -168,7 +168,7 @@ class MultiheadAttention(nn.Module):
             and not torch.jit.is_scripting()
         ):
             assert key is not None and value is not None
-            return F.multi_head_attention_forward(
+            attn, attn_weights = F.multi_head_attention_forward(
                 query,
                 key,
                 value,
@@ -183,7 +183,7 @@ class MultiheadAttention(nn.Module):
                 self.out_proj.weight,
                 self.out_proj.bias,
                 self.training or self.dropout_module.apply_during_inference,
-                key_padding_mask,
+                kp_mask,
                 need_weights,
                 attn_mask,
                 use_separate_proj_weight=True,
@@ -191,6 +191,13 @@ class MultiheadAttention(nn.Module):
                 k_proj_weight=self.k_proj.weight,
                 v_proj_weight=self.v_proj.weight,
             )
+
+            if attn is not None:
+                attn = attn.reshape(tgt_len, bsz, self.embed_dim * self.nblocks)
+            if attn_weights is not None:
+                attn_weights = attn_weights.reshape(bsz, self.nblocks, tgt_len, src_len).mean(dim=1)
+            
+            return attn, attn_weights
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
@@ -243,19 +250,19 @@ class MultiheadAttention(nn.Module):
 
         q = (
             q.contiguous()
-            .view(tgt_len, bsz * self.num_heads, self.head_dim)
+            .view(tgt_len, bsz * self.nblocks * self.num_heads, self.head_dim)
             .transpose(0, 1)
         )
         if k is not None:
             k = (
                 k.contiguous()
-                .view(-1, bsz * self.num_heads, self.head_dim)
+                .view(src_len, bsz * self.nblocks * self.num_heads, self.head_dim)
                 .transpose(0, 1)
             )
         if v is not None:
             v = (
                 v.contiguous()
-                .view(-1, bsz * self.num_heads, self.head_dim)
+                .view(src_len, bsz * self.nblocks * self.num_heads, self.head_dim)
                 .transpose(0, 1)
             )
 
@@ -264,23 +271,16 @@ class MultiheadAttention(nn.Module):
             if "prev_key" in saved_state:
                 _prev_key = saved_state["prev_key"]
                 assert _prev_key is not None
-                pk_bsz,_,seq_len,_ = _prev_key.shape
-                print('shape prev key', _prev_key.shape)
-                print('num heads', self.num_heads, 'head_dim', self.head_dim)
-                print('bsz', bsz, 'pk_bsz', pk_bsz)
-                prev_key = _prev_key.view(pk_bsz * self.num_heads, seq_len, self.head_dim)
+                prev_key = _prev_key.view(bsz * self.nblocks * self.num_heads, -1, self.head_dim)
                 if static_kv:
                     k = prev_key
                 else:
                     assert k is not None
-                    print('k shape', k.shape)
-                    print('prevkey shape', prev_key.shape)
                     k = torch.cat([prev_key, k], dim=1)
             if "prev_value" in saved_state:
                 _prev_value = saved_state["prev_value"]
                 assert _prev_value is not None
-                pv_bsz,_,seq_len,_ = _prev_value.shape
-                prev_value = _prev_value.view(pv_bsz * self.num_heads, seq_len, self.head_dim)
+                prev_value = _prev_value.view(bsz * self.nblocks * self.num_heads, -1, self.head_dim)
                 if static_kv:
                     v = prev_value
                 else:
@@ -298,12 +298,14 @@ class MultiheadAttention(nn.Module):
                 static_kv=static_kv,
             )
 
-            saved_state["prev_key"] = k.view(bsz, self.num_heads, -1, self.head_dim)
-            saved_state["prev_value"] = v.view(bsz, self.num_heads, -1, self.head_dim)
+            saved_state["prev_key"] = k.view(bsz, self.nblocks * self.num_heads, -1, self.head_dim)
+            saved_state["prev_value"] = v.view(bsz, self.nblocks * self.num_heads, -1, self.head_dim)
             saved_state["prev_key_padding_mask"] = key_padding_mask
+
             # In this branch incremental_state is never None
             assert incremental_state is not None
             incremental_state = self._set_input_buffer(incremental_state, saved_state)
+        
         assert k is not None
         src_len = k.size(1)
 
@@ -339,7 +341,7 @@ class MultiheadAttention(nn.Module):
         attn_weights = torch.bmm(q, k.transpose(1, 2))
         attn_weights = MultiheadAttention.apply_sparse_mask(attn_weights, tgt_len, src_len, bsz)
 
-        assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
+        assert list(attn_weights.size()) == [bsz * self.nblocks * self.num_heads, tgt_len, src_len]
 
         if attn_mask is not None:
             attn_mask = attn_mask.unsqueeze(0)
@@ -349,7 +351,7 @@ class MultiheadAttention(nn.Module):
 
         if key_padding_mask is not None:
             # don't attend to padding symbols
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.view(bsz, self.nblocks * self.num_heads, tgt_len, src_len)
             if not self.tpu:
                 attn_weights = attn_weights.masked_fill(
                     key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
@@ -359,9 +361,10 @@ class MultiheadAttention(nn.Module):
                 attn_weights = attn_weights.transpose(0, 2)
                 attn_weights = attn_weights.masked_fill(key_padding_mask, float('-inf'))
                 attn_weights = attn_weights.transpose(0, 2)
-            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.view(bsz * self.nblocks * self.num_heads, tgt_len, src_len)
 
         if before_softmax:
+            print("HERE")
             return attn_weights, v
 
         attn_weights_float = utils.softmax(
@@ -372,22 +375,26 @@ class MultiheadAttention(nn.Module):
 
         assert v is not None
         attn = torch.bmm(attn_probs, v)
-        assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
+        assert list(attn.size()) == [bsz * self.nblocks * self.num_heads, tgt_len, self.head_dim]
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)
             # the transpose is a no-op copy before view, thus unnecessary
-            attn = attn.contiguous().view(tgt_len, bsz, embed_dim)
+            attn = attn.contiguous().view(tgt_len, bsz * self.nblocks, self.embed_dim)
         else:
-            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz * self.nblocks, self.embed_dim)
         attn = self.out_proj(attn)
         attn_weights: Optional[Tensor] = None
         if need_weights:
             attn_weights = attn_weights_float.view(
-                bsz, self.num_heads, tgt_len, src_len
+                bsz, self.nblocks * self.num_heads, tgt_len, src_len
             ).transpose(1, 0)
+            
             if not need_head_weights:
                 # average attention weights over heads
                 attn_weights = attn_weights.mean(dim=0)
+
+        if attn is not None:
+            attn = attn.reshape(tgt_len, bsz, self.embed_dim * self.nblocks)
 
         return attn, attn_weights
 
@@ -495,3 +502,4 @@ class MultiheadAttention(nn.Module):
 
         for key, value in items_to_add.items():
             state_dict[key] = value
+
