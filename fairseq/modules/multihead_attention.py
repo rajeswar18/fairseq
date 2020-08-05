@@ -16,6 +16,7 @@ from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.quant_noise import quant_noise
 
+from fairseq.modules.group_linear_layer import GroupLinearLayer
 
 @with_incremental_state
 class MultiheadAttention(nn.Module):
@@ -46,14 +47,14 @@ class MultiheadAttention(nn.Module):
         self.vdim = vdim if vdim is not None else embed_dim
         self.qkv_same_dim = self.kdim == embed_dim and self.vdim == embed_dim
 
-        self.num_heads = num_heads
+        self.num_heads = num_heads // nblocks
         self.dropout_module = FairseqDropout(
             dropout, module_name=self.__class__.__name__
         )
 
-        self.head_dim = embed_dim // num_heads
+        self.head_dim = embed_dim // (nblocks * self.num_heads)
         assert (
-            self.head_dim * num_heads == self.embed_dim
+            self.head_dim * self.num_heads * nblocks == self.embed_dim
         ), "embed_dim must be divisible by num_heads"
         self.scaling = self.head_dim ** -0.5
 
@@ -64,11 +65,16 @@ class MultiheadAttention(nn.Module):
             "Self-attention requires query, key and " "value to be of the same size"
         )
 
-        self.k_proj = quant_noise(nn.Linear(self.kdim, embed_dim, bias=bias), q_noise, qn_block_size)
-        self.v_proj = quant_noise(nn.Linear(self.vdim, embed_dim, bias=bias), q_noise, qn_block_size)
-        self.q_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
+        #self.k_proj = quant_noise(nn.Linear(self.kdim, embed_dim, bias=bias), q_noise, qn_block_size)
+        #self.v_proj = quant_noise(nn.Linear(self.vdim, embed_dim, bias=bias), q_noise, qn_block_size)
+        #self.q_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
+        #self.out_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
 
-        self.out_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
+        #GroupLinearLayer(input_dim//self.nb, output_dim//self.nb, self.nb)
+        self.k_proj = quant_noise(GroupLinearLayer(self.kdim//nblocks, embed_dim//nblocks, nblocks, bias=bias), q_noise, qn_block_size)
+        self.v_proj = quant_noise(GroupLinearLayer(self.vdim//nblocks, embed_dim//nblocks, nblocks, bias=bias), q_noise, qn_block_size)
+        self.q_proj = quant_noise(GroupLinearLayer(embed_dim//nblocks, embed_dim//nblocks, nblocks, bias=bias), q_noise, qn_block_size)
+        self.out_proj = quant_noise(GroupLinearLayer(embed_dim//nblocks, embed_dim//nblocks, nblocks, bias=bias), q_noise, qn_block_size)
 
         if add_bias_kv:
             self.bias_k = Parameter(torch.Tensor(1, 1, embed_dim))
@@ -90,18 +96,18 @@ class MultiheadAttention(nn.Module):
         self.tpu = True
 
     def reset_parameters(self):
-        if self.qkv_same_dim:
+        #if self.qkv_same_dim:
             # Empirically observed the convergence to be much better with
             # the scaled initialization
-            nn.init.xavier_uniform_(self.k_proj.weight, gain=1 / math.sqrt(2))
-            nn.init.xavier_uniform_(self.v_proj.weight, gain=1 / math.sqrt(2))
-            nn.init.xavier_uniform_(self.q_proj.weight, gain=1 / math.sqrt(2))
-        else:
-            nn.init.xavier_uniform_(self.k_proj.weight)
-            nn.init.xavier_uniform_(self.v_proj.weight)
-            nn.init.xavier_uniform_(self.q_proj.weight)
+        #    nn.init.xavier_uniform_(self.k_proj.weight, gain=1 / math.sqrt(2))
+        #    nn.init.xavier_uniform_(self.v_proj.weight, gain=1 / math.sqrt(2))
+        #    nn.init.xavier_uniform_(self.q_proj.weight, gain=1 / math.sqrt(2))
+        #else:
+        #    nn.init.xavier_uniform_(self.k_proj.weight)
+        #    nn.init.xavier_uniform_(self.v_proj.weight)
+        #    nn.init.xavier_uniform_(self.q_proj.weight)
 
-        nn.init.xavier_uniform_(self.out_proj.weight)
+        #nn.init.xavier_uniform_(self.out_proj.weight)
         if self.out_proj.bias is not None:
             nn.init.constant_(self.out_proj.bias, 0.)
         if self.bias_k is not None:
@@ -140,12 +146,12 @@ class MultiheadAttention(nn.Module):
         """
         tgt_len, bsz, embed_dim = query.size()
  
-        query = query.reshape(tgt_len, bsz * self.nblocks, self.embed_dim)
+        #query = query.reshape(tgt_len, bsz * self.nblocks, self.embed_dim)
 
         if key is not None:
             src_len = key.shape[0]
-            key = key.reshape(src_len, bsz * self.nblocks, self.embed_dim)
-            value = value.reshape(src_len, bsz * self.nblocks, self.embed_dim)
+        #    key = key.reshape(src_len, bsz * self.nblocks, self.embed_dim)
+        #    value = value.reshape(src_len, bsz * self.nblocks, self.embed_dim)
 
         kp_mask = None
         if key_padding_mask is not None:
@@ -155,8 +161,9 @@ class MultiheadAttention(nn.Module):
         if need_head_weights:
             need_weights = True
 
-        assert embed_dim == self.embed_dim * self.nblocks
-        assert list(query.size()) == [tgt_len, bsz * self.nblocks, self.embed_dim]
+        #assert embed_dim == self.embed_dim * self.nblocks
+        #assert list(query.size()) == [tgt_len, bsz * self.nblocks, self.embed_dim]
+
 
         if (
             not self.onnx_trace
@@ -211,10 +218,10 @@ class MultiheadAttention(nn.Module):
         else:
             saved_state = None
 
-        query = query.reshape((tgt_len, bsz * self.nblocks, self.embed_dim))
-        if key is not None:
-            key = key.reshape((src_len, bsz * self.nblocks, self.embed_dim))
-            value = value.reshape((src_len, bsz * self.nblocks, self.embed_dim))
+        #query = query.reshape((tgt_len*bsz, self.nblocks, self.embed_dim//self.nblocks))
+        #if key is not None:
+        #    key = key.reshape((src_len*bsz, self.nblocks, self.embed_dim//self.nblocks))
+        #    value = value.reshape((src_len*bsz, self.nblocks, self.embed_dim//self.nblocks))
 
         if self.self_attention:
             q = self.q_proj(query)
@@ -237,10 +244,15 @@ class MultiheadAttention(nn.Module):
             v = self.v_proj(value)
         q *= self.scaling
 
+        query = query.reshape((tgt_len, bsz*self.nblocks, self.embed_dim//self.nblocks))
+        if key is not None:
+            key = key.reshape((src_len, bsz*self.nblocks, self.embed_dim//self.nblocks))
+            value = value.reshape((src_len, bsz*self.nblocks, self.embed_dim//self.nblocks))
+
         if self.bias_k is not None:
             assert self.bias_v is not None
-            k = torch.cat([k, self.bias_k.repeat(1, bsz, 1)])
-            v = torch.cat([v, self.bias_v.repeat(1, bsz, 1)])
+            k = torch.cat([k, self.bias_k.repeat(1, bsz*self.nblocks, 1)])
+            v = torch.cat([v, self.bias_v.repeat(1, bsz*self.nblocks, 1)])
             if attn_mask is not None:
                 attn_mask = torch.cat(
                     [attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1
@@ -254,6 +266,7 @@ class MultiheadAttention(nn.Module):
                     dim=1,
                 )
 
+
         q = (
             q.contiguous()
             .view(tgt_len, bsz * self.nblocks * self.num_heads, self.head_dim)
@@ -265,7 +278,7 @@ class MultiheadAttention(nn.Module):
                 .view(src_len, bsz * self.nblocks * self.num_heads, self.head_dim)
                 .transpose(0, 1)
             )
-            print('making k', k.shape)
+            #print('making k', k.shape)
         if v is not None:
             v = (
                 v.contiguous()
@@ -274,7 +287,7 @@ class MultiheadAttention(nn.Module):
             )
 
         #these steps make q,k,v
-        print('ran projection layers', q.shape)
+        #print('ran projection layers', q.shape)
 
         if saved_state is not None:
             # saved states are stored with shape (bsz, num_heads, seq_len, head_dim)
@@ -388,10 +401,10 @@ class MultiheadAttention(nn.Module):
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)
             # the transpose is a no-op copy before view, thus unnecessary
-            attn = attn.contiguous().view(tgt_len, bsz * self.nblocks, self.embed_dim)
+            attn = attn.contiguous().view(tgt_len, bsz, self.embed_dim)
         else:
-            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz * self.nblocks, self.embed_dim)
-        
+            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, self.embed_dim)
+
         attn = self.out_proj(attn)
         attn_weights: Optional[Tensor] = None
         if need_weights:
@@ -404,7 +417,7 @@ class MultiheadAttention(nn.Module):
                 attn_weights = attn_weights.mean(dim=0)
 
         if attn is not None:
-            attn = attn.reshape(tgt_len, bsz, self.embed_dim * self.nblocks)
+            attn = attn.reshape(tgt_len, bsz, self.embed_dim)
 
         return attn, attn_weights
 

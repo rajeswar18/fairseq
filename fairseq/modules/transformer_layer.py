@@ -10,12 +10,13 @@ import torch.nn as nn
 from fairseq import utils
 from fairseq.modules import LayerNorm, MultiheadAttention
 from fairseq.modules.group_linear_layer import GroupLinearLayer
-
+import sys
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from torch import Tensor
 
 import torch.nn.functional as F
+
 
 class Attention(nn.Module):
     def __init__(self, n_heads, n_blocks, dim):
@@ -26,19 +27,26 @@ class Attention(nn.Module):
         self.dim = dim
         self.block_dim = dim // self.n_blocks
         #self.head_dim = self.block_dim // self.n_heads
-        self.head_dim = 128
+        self.head_dim = 64
         self.scale = self.head_dim ** -0.5
+        embed_dim = self.head_dim * n_heads * n_blocks
 
-        self.query_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
-        self.key_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
-        self.value_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
-        self.final = nn.Linear(self.head_dim * self.n_heads, self.block_dim)
+        self.embed_dim = embed_dim
 
-        self.norm = nn.LayerNorm(self.dim)
+        #self.query_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
+        #self.key_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
+        #self.value_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
+        #self.final = nn.Linear(self.head_dim * self.n_heads, self.block_dim)
+
+        self.query_net = GroupLinearLayer(self.block_dim, embed_dim//n_blocks, n_blocks)
+        self.key_net = GroupLinearLayer(self.block_dim, embed_dim//n_blocks, n_blocks)
+        self.value_net = GroupLinearLayer(self.block_dim, embed_dim//n_blocks, n_blocks)
+        self.final = GroupLinearLayer(embed_dim//n_blocks, self.block_dim, n_blocks)
 
     def forward(self, x):
         seq_len, bsz, _ = x.shape
-        x = x.view(seq_len, bsz, self.n_blocks, self.block_dim)
+        #x = x.view(seq_len, bsz, self.n_blocks, self.block_dim)
+
 
         q = self.query_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
         k = self.key_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
@@ -53,10 +61,9 @@ class Attention(nn.Module):
         out = torch.matmul(score, v).transpose(2,3)
         score = score.mean(dim=2)
 
-        out = out.reshape(seq_len, bsz, self.n_blocks, self.head_dim * self.n_heads)
+        out = out.reshape(seq_len, bsz, self.n_blocks * self.head_dim * self.n_heads)
         out = self.final(out)
-        out = out.view(seq_len, bsz, self.dim)
-        out = self.norm(out)
+        #out = out.view(seq_len, bsz, self.dim)
 
         return out, score 
 
@@ -84,10 +91,11 @@ class TransformerEncoderLayer(nn.Module):
  
         print('encoder embed_dim', self.embed_dim)
 
-        self.nb = 4
+        self.nb = 2
 
         self.self_attn = self.build_self_attention(self.embed_dim, args) #should divide embed_dim by nb.  Then raise embed_dim in args
         self.self_attn_layer_norm = LayerNorm(self.embed_dim)
+        self.blockatt_layer_norm = LayerNorm(self.embed_dim)
         self.dropout_module = FairseqDropout(args.dropout, module_name=self.__class__.__name__)
         self.activation_fn = utils.get_activation_fn(
             activation=getattr(args, "activation_fn", "relu")
@@ -125,7 +133,7 @@ class TransformerEncoderLayer(nn.Module):
 
     def build_self_attention(self, embed_dim, args):
         return MultiheadAttention(
-            embed_dim//self.nb,
+            embed_dim,
             args.encoder_attention_heads,
             dropout=args.attention_dropout,
             self_attention=True,
@@ -194,7 +202,8 @@ class TransformerEncoderLayer(nn.Module):
             x = self.self_attn_layer_norm(x)
 
         if self.blockatt:
-            residual = x
+            residual = x*1.0
+            x = self.blockatt_layer_norm(x)
             x, _ = self.comm(x)
             x = self.dropout_module(x)
             x = residual + x
@@ -244,8 +253,13 @@ class TransformerDecoderLayer(nn.Module):
 
         self.cross_self_attention = getattr(args, "cross_self_attention", False)
 
-        self.nb = 4
+        self.nb = 2
         print("SETUP TRANSFORMER DECODER LAYER")
+
+        # use layerNorm rather than FusedLayerNorm for exporting.
+        # char_inputs can be used to determint this.
+        # TODO  remove this once we update apex with the fix
+        export = getattr(args, "char_inputs", False)
 
         self.self_attn = self.build_self_attention(
             self.embed_dim,
@@ -255,6 +269,7 @@ class TransformerDecoderLayer(nn.Module):
         )
         if self.blockatt:
             self.self_comm = Attention(args.decoder_attention_heads, self.nb, self.embed_dim)
+            self.blockatt_layer_norm = LayerNorm(self.embed_dim, export = export)
 
         self.activation_fn = utils.get_activation_fn(
             activation=getattr(args, "activation_fn", "relu")
@@ -267,10 +282,6 @@ class TransformerDecoderLayer(nn.Module):
             float(activation_dropout_p), module_name=self.__class__.__name__)
         self.normalize_before = args.decoder_normalize_before
 
-        # use layerNorm rather than FusedLayerNorm for exporting.
-        # char_inputs can be used to determint this.
-        # TODO  remove this once we update apex with the fix
-        export = getattr(args, "char_inputs", False)
         self.self_attn_layer_norm = LayerNorm(self.embed_dim, export=export)
 
         if no_encoder_attn:
@@ -307,7 +318,7 @@ class TransformerDecoderLayer(nn.Module):
 
     def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False):
         return MultiheadAttention(
-            embed_dim//self.nb,
+            embed_dim,
             args.decoder_attention_heads,
             dropout=args.attention_dropout,
             add_bias_kv=add_bias_kv,
@@ -322,13 +333,13 @@ class TransformerDecoderLayer(nn.Module):
         kdim = getattr(args, "encoder_embed_dim", None)
         vdim = getattr(args, "encoder_embed_dim", None)
 
-        if kdim is not None:
+        if False and kdim is not None:
             kdim = kdim//self.nb
-        if vdim is not None:
+        if False and vdim is not None:
             vdim = vdim//self.nb
 
         return MultiheadAttention(
-            embed_dim//self.nb,
+            embed_dim,
             args.decoder_attention_heads,
             kdim=kdim,
             vdim=vdim,
@@ -370,6 +381,8 @@ class TransformerDecoderLayer(nn.Module):
         """
         if need_head_weights:
             need_attn = True
+
+        sys.stdout.flush()
 
         residual = x
         if self.normalize_before:
@@ -462,7 +475,8 @@ class TransformerDecoderLayer(nn.Module):
                 x = self.encoder_attn_layer_norm(x)
 
             if self.blockatt:
-                residual = x
+                residual = x*1.0
+                x = self.blockatt_layer_norm(x)
                 x, _ = self.encoder_comm(x)
                 x = self.dropout_module(x)
                 x = residual + x
