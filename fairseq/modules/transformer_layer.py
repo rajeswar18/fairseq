@@ -25,8 +25,8 @@ class Attention(nn.Module):
         self.n_blocks = n_blocks
         self.dim = dim
         self.block_dim = dim // self.n_blocks
-        #self.head_dim = self.block_dim // self.n_heads
-        self.head_dim = 128
+        self.head_dim = self.block_dim // self.n_heads
+        self.head_dim = 32
         self.scale = self.head_dim ** -0.5
 
         self.query_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
@@ -57,6 +57,25 @@ class Attention(nn.Module):
 
         return out, score 
 
+class NormLayer(nn.Module):
+    def __init__(self, num_rims, dim, export=False):
+        super(NormLayer, self).__init__()
+
+        self.num_rims = num_rims
+        self.dim = dim
+
+        self.norm = LayerNorm(dim, export=export)
+
+    def forward(self, x):
+        seq_len, bsz, _ = x.shape
+        x = x.view(seq_len, bsz, self.num_rims, self.dim)
+
+        x = self.norm(x)
+        
+        x = x.view(seq_len, bsz, self.num_rims * self.dim)
+
+        return x
+ 
 class TransformerEncoderLayer(nn.Module):
     """Encoder layer block.
 
@@ -81,10 +100,11 @@ class TransformerEncoderLayer(nn.Module):
  
         print('encoder embed_dim', self.embed_dim)
 
-        self.nb = 4
+        self.nb = 2
+        self.norm_blocks = 2
 
         self.self_attn = self.build_self_attention(self.embed_dim, args) #should divide embed_dim by nb.  Then raise embed_dim in args
-        self.self_attn_layer_norm = LayerNorm(self.embed_dim)
+        self.self_attn_layer_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
         self.dropout_module = FairseqDropout(args.dropout, module_name=self.__class__.__name__)
         self.activation_fn = utils.get_activation_fn(
             activation=getattr(args, "activation_fn", "relu")
@@ -107,11 +127,11 @@ class TransformerEncoderLayer(nn.Module):
             args.encoder_ffn_embed_dim, self.embed_dim, self.quant_noise, self.quant_noise_block_size
         )
 
-        self.final_layer_norm = LayerNorm(self.embed_dim)
+        self.final_layer_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
 
         if self.blockatt:
             self.comm = Attention(args.encoder_attention_heads, self.nb, self.embed_dim)
-            self.comm_norm = LayerNorm(self.embed_dim)
+            self.comm_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
 
     def build_fc1(self, input_dim, output_dim, q_noise, qn_block_size):
         return quant_noise(GroupLinearLayer(input_dim//self.nb, output_dim//self.nb, self.nb), p=q_noise, block_size=qn_block_size)
@@ -248,7 +268,8 @@ class TransformerDecoderLayer(nn.Module):
 
         self.cross_self_attention = getattr(args, "cross_self_attention", False)
 
-        self.nb = 4
+        self.nb = 2
+        self.norm_blocks = 2
         print("SETUP TRANSFORMER DECODER LAYER")
 
         self.self_attn = self.build_self_attention(
@@ -259,7 +280,7 @@ class TransformerDecoderLayer(nn.Module):
         )
         if self.blockatt:
             self.self_comm = Attention(args.decoder_attention_heads, self.nb, self.embed_dim)
-            self.self_comm_norm = LayerNorm(self.embed_dim)
+            self.self_comm_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
 
         self.activation_fn = utils.get_activation_fn(
             activation=getattr(args, "activation_fn", "relu")
@@ -276,7 +297,7 @@ class TransformerDecoderLayer(nn.Module):
         # char_inputs can be used to determint this.
         # TODO  remove this once we update apex with the fix
         export = getattr(args, "char_inputs", False)
-        self.self_attn_layer_norm = LayerNorm(self.embed_dim, export=export)
+        self.self_attn_layer_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks, export=export)
 
         if no_encoder_attn:
             self.encoder_attn = None
@@ -285,9 +306,9 @@ class TransformerDecoderLayer(nn.Module):
             self.encoder_comm = None
         else:
             self.encoder_attn = self.build_encoder_attention(self.embed_dim, args)
-            self.encoder_attn_layer_norm = LayerNorm(self.embed_dim, export=export)
+            self.encoder_attn_layer_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks, export=export)
             if self.blockatt:
-                self.encoder_comm_norm = LayerNorm(self.embed_dim)
+                self.encoder_comm_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
                 self.encoder_comm = Attention(args.decoder_attention_heads, self.nb, self.embed_dim)
 
         print('setup transformer layer decoder blocks: ', self.nb)
@@ -299,7 +320,7 @@ class TransformerDecoderLayer(nn.Module):
             args.decoder_ffn_embed_dim, self.embed_dim, self.quant_noise, self.quant_noise_block_size
         )
 
-        self.final_layer_norm = LayerNorm(self.embed_dim, export=export)
+        self.final_layer_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks, export=export)
         self.need_attn = True
 
         self.onnx_trace = False
