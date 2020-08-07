@@ -51,10 +51,12 @@ class MultiheadAttention(nn.Module):
             dropout, module_name=self.__class__.__name__
         )
 
-        self.head_dim = embed_dim // num_heads
-        assert (
-            self.head_dim * num_heads == self.embed_dim
-        ), "embed_dim must be divisible by num_heads"
+        self.head_dim = 128 #embed_dim // num_heads
+        
+        #assert (
+        #    self.head_dim * num_heads == self.embed_dim
+        #), "embed_dim must be divisible by num_heads"
+        
         self.scaling = self.head_dim ** -0.5
 
         self.self_attention = self_attention
@@ -64,11 +66,11 @@ class MultiheadAttention(nn.Module):
             "Self-attention requires query, key and " "value to be of the same size"
         )
 
-        self.k_proj = quant_noise(nn.Linear(self.kdim, embed_dim, bias=bias), q_noise, qn_block_size)
-        self.v_proj = quant_noise(nn.Linear(self.vdim, embed_dim, bias=bias), q_noise, qn_block_size)
-        self.q_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
+        self.k_proj = quant_noise(nn.Linear(self.kdim, self.head_dim * num_heads, bias=bias), q_noise, qn_block_size)
+        self.v_proj = quant_noise(nn.Linear(self.vdim, self.head_dim * num_heads, bias=bias), q_noise, qn_block_size)
+        self.q_proj = quant_noise(nn.Linear(embed_dim, self.head_dim * num_heads, bias=bias), q_noise, qn_block_size)
 
-        self.out_proj = quant_noise(nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size)
+        self.out_proj = quant_noise(nn.Linear(self.head_dim * num_heads, embed_dim, bias=bias), q_noise, qn_block_size)
 
         if add_bias_kv:
             self.bias_k = Parameter(torch.Tensor(1, 1, embed_dim))
@@ -386,7 +388,7 @@ class MultiheadAttention(nn.Module):
             # the transpose is a no-op copy before view, thus unnecessary
             attn = attn.contiguous().view(tgt_len, bsz * self.nblocks, self.embed_dim)
         else:
-            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz * self.nblocks, self.embed_dim)
+            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz * self.nblocks, self.head_dim * self.num_heads)
         
         attn = self.out_proj(attn)
         attn_weights: Optional[Tensor] = None

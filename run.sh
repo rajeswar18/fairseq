@@ -6,6 +6,10 @@ rm -rf checkpoints/
 python3 fairseq_cli/train.py \
     data-bin/iwslt14.tokenized.de-en \
     --arch transformer_iwslt_de_en --share-decoder-input-output-embed \
+    --encoder-embed-dim	512 \
+    --encoder-ffn-embed-dim 1024 \
+    --decoder-embed-dim	512 \
+    --decoder-ffn-embed-dim 1024 \
     --optimizer adam --adam-betas '(0.9, 0.98)' --clip-norm 0.0 \
     --lr 5e-4 --lr-scheduler inverse_sqrt --warmup-updates 4000 \
     --dropout 0.3 --weight-decay 0.0001 \

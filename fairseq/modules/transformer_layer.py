@@ -21,11 +21,12 @@ class Attention(nn.Module):
     def __init__(self, n_heads, n_blocks, dim):
         super(Attention, self).__init__()
 
-        self.n_heads = n_heads
+        #self.n_heads = n_heads
+        self.n_heads = 2
         self.n_blocks = n_blocks
         self.dim = dim
         self.block_dim = dim // self.n_blocks
-        self.head_dim = self.block_dim // self.n_heads
+        #self.head_dim = self.block_dim // self.n_heads
         self.head_dim = 32
         self.scale = self.head_dim ** -0.5
 
