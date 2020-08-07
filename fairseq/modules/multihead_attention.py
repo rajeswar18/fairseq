@@ -278,16 +278,12 @@ class MultiheadAttention(nn.Module):
                 .view(src_len, bsz * self.nblocks * self.num_heads, self.head_dim)
                 .transpose(0, 1)
             )
-            #print('making k', k.shape)
         if v is not None:
             v = (
                 v.contiguous()
                 .view(src_len, bsz * self.nblocks * self.num_heads, self.head_dim)
                 .transpose(0, 1)
             )
-
-        #these steps make q,k,v
-        #print('ran projection layers', q.shape)
 
         if saved_state is not None:
             # saved states are stored with shape (bsz, num_heads, seq_len, head_dim)
