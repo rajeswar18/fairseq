@@ -15,7 +15,7 @@ from fairseq import utils
 from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.quant_noise import quant_noise
-
+import random
 from fairseq.modules.group_linear_layer import GroupLinearLayer
 
 @with_incremental_state
@@ -389,6 +389,14 @@ class MultiheadAttention(nn.Module):
             attn_weights, dim=-1, onnx_trace=self.onnx_trace
         )
         attn_weights = attn_weights_float.type_as(attn_weights)
+        
+        attn_reshape = attn_weights.reshape((bsz, self.nblocks, self.num_heads, tgt_len, src_len))
+        
+        if random.uniform(0,1) < 0.001:
+            print('shape attn', attn_reshape.shape)
+            print('block-0 arbs', attn_reshape[0,:,:,:,:])
+            print('entropy', (attn_reshape * (1.0 - attn_reshape)).mean())
+
         attn_probs = self.dropout_module(attn_weights)
 
         assert v is not None
