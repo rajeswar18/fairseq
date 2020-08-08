@@ -33,6 +33,7 @@ from .unfold import unfold1d
 from .transformer_layer import TransformerDecoderLayer, TransformerEncoderLayer
 from .vggblock import VGGBlock
 from .group_linear_layer import GroupLinearLayer
+from .sparse_attn import SparseAttention
 
 __all__ = [
     'AdaptiveInput',
@@ -64,6 +65,7 @@ __all__ = [
     'PositionalEmbedding',
     'ScalarBias',
     'SinusoidalPositionalEmbedding',
+    'SparseAttention', 
     'TransformerSentenceEncoderLayer',
     'TransformerSentenceEncoder',
     'TransformerDecoderLayer',
