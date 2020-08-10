@@ -39,7 +39,8 @@ class MultiheadAttention(nn.Module):
         encoder_decoder_attention=False,
         q_noise=0.0,
         qn_block_size=8,
-        nblocks=1
+        nblocks=1,
+        top_k=None
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -53,7 +54,10 @@ class MultiheadAttention(nn.Module):
             dropout, module_name=self.__class__.__name__
         )
 
-        self.sa = SparseAttention(top_k = (nblocks * num_heads) // 2)
+        if top_k is None:
+            self.sa = None
+        else:
+            self.sa = SparseAttention(top_k = top_k)
 
         self.head_dim = 128 #embed_dim // num_heads
         
@@ -383,9 +387,10 @@ class MultiheadAttention(nn.Module):
         )
         attn_weights = attn_weights_float.type_as(attn_weights)
 
-        attn_weights = attn_weights.reshape((bsz, self.nblocks*self.num_heads, tgt_len, src_len))
-        attn_weights = self.sa(attn_weights)
-        attn_weights = attn_weights.reshape((bsz * self.nblocks * self.num_heads, tgt_len, src_len))
+        if self.sa is not None:
+            attn_weights = attn_weights.reshape((bsz, self.nblocks*self.num_heads, tgt_len, src_len))
+            attn_weights = self.sa(attn_weights)
+            attn_weights = attn_weights.reshape((bsz * self.nblocks * self.num_heads, tgt_len, src_len))
 
         attn_probs = self.dropout_module(attn_weights)
 

@@ -102,8 +102,8 @@ class TransformerEncoderLayer(nn.Module):
  
         print('encoder embed_dim', self.embed_dim)
 
-        self.nb = 2
-        self.norm_blocks = 2
+        self.nb = args.num_modules
+        self.norm_blocks = args.num_modules
 
         self.self_attn = self.build_self_attention(self.embed_dim, args) #should divide embed_dim by nb.  Then raise embed_dim in args
         self.self_attn_layer_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
@@ -151,7 +151,8 @@ class TransformerEncoderLayer(nn.Module):
             self_attention=True,
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
-            nblocks=self.nb
+            nblocks=self.nb,
+            top_k = int(args.topk_ratio * args.encoder_attention_heads * self.nb)
         )
 
     def upgrade_state_dict_named(self, state_dict, name):
@@ -270,8 +271,8 @@ class TransformerDecoderLayer(nn.Module):
 
         self.cross_self_attention = getattr(args, "cross_self_attention", False)
 
-        self.nb = 2
-        self.norm_blocks = 2
+        self.nb = args.num_modules
+        self.norm_blocks = args.num_modules
         print("SETUP TRANSFORMER DECODER LAYER")
 
         self.self_attn = self.build_self_attention(
@@ -345,7 +346,8 @@ class TransformerDecoderLayer(nn.Module):
             self_attention=not getattr(args, "cross_self_attention", False),
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
-            nblocks=self.nb
+            nblocks=self.nb,
+            top_k = int(args.topk_ratio * args.decoder_attention_heads * self.nb)
         )
 
     def build_encoder_attention(self, embed_dim, args):
@@ -366,7 +368,8 @@ class TransformerDecoderLayer(nn.Module):
             encoder_decoder_attention=True,
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
-            nblocks=self.nb
+            nblocks=self.nb,
+            top_k = int(args.topk_ratio * args.decoder_attention_heads * self.nb)
         )
 
     def prepare_for_onnx_export_(self):

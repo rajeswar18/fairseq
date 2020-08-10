@@ -55,7 +55,7 @@ class SparseAttention(nn.Module):
 
         attn_w = attn_w.reshape((bsz, trg_len, src_len, num_modules)).permute(0,3,1,2).reshape((bsz*num_modules*trg_len, src_len)) # bsz, num_modules, trg_len, src_len
 
-        do_normalize = True
+        do_normalize = False
 
         if do_normalize:
             attn_w_sum = torch.sum(attn_w, dim = 1, keepdim=True)

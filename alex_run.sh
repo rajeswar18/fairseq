@@ -32,6 +32,8 @@ python3 fairseq_cli/train.py \
     --eval-bleu-detok moses \
     --eval-bleu-remove-bpe \
     --eval-bleu-print-samples \
-    --best-checkpoint-metric bleu --maximize-best-checkpoint-metric
+    --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
+    --topk_ratio 1.0 \
+    --num_modules 4
 
 #> out.txt
