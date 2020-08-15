@@ -40,7 +40,7 @@ class MultiheadAttention(nn.Module):
         q_noise=0.0,
         qn_block_size=8,
         nblocks=1,
-        top_k=None
+        top_k_ratio=None
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -54,10 +54,16 @@ class MultiheadAttention(nn.Module):
             dropout, module_name=self.__class__.__name__
         )
 
-        if top_k is None:
+        print('heads', num_heads)
+        print('num blocks', nblocks)
+
+        if top_k_ratio is None:
             self.sa = None
+            print('no topk')
         else:
+            top_k = int(top_k_ratio * nblocks * num_heads)
             self.sa = SparseAttention(top_k = top_k)
+            print('using topk', top_k)
 
         self.head_dim = 128 #embed_dim // num_heads
         

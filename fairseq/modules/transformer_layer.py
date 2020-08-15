@@ -152,7 +152,7 @@ class TransformerEncoderLayer(nn.Module):
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
             nblocks=self.nb,
-            top_k = int(args.topk_ratio * args.encoder_attention_heads * self.nb)
+            top_k_ratio = args.topk_ratio
         )
 
     def upgrade_state_dict_named(self, state_dict, name):
@@ -347,7 +347,7 @@ class TransformerDecoderLayer(nn.Module):
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
             nblocks=self.nb,
-            top_k = int(args.topk_ratio * args.decoder_attention_heads * self.nb)
+            top_k_ratio = args.topk_ratio
         )
 
     def build_encoder_attention(self, embed_dim, args):
@@ -369,7 +369,7 @@ class TransformerDecoderLayer(nn.Module):
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
             nblocks=self.nb,
-            top_k = int(args.topk_ratio * args.decoder_attention_heads * self.nb)
+            top_k_ratio = args.topk_ratio
         )
 
     def prepare_for_onnx_export_(self):
