@@ -95,7 +95,7 @@ class TransformerEncoderLayer(nn.Module):
 
     def __init__(self, args):
         super().__init__()
-        self.blockatt = True
+        self.blockatt = args.use_module_communication == "True" or args.use_module_communication == "true"
         self.embed_dim = args.encoder_embed_dim
         self.quant_noise = getattr(args, "quant_noise_pq", 0)
         self.quant_noise_block_size = getattr(args, "quant_noise_pq_block_size", 8)
@@ -263,7 +263,7 @@ class TransformerDecoderLayer(nn.Module):
         self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
     ):
         super().__init__()
-        self.blockatt = True
+        self.blockatt = args.use_module_communication == "True" or args.use_module_communication == "true"
         self.embed_dim = args.decoder_embed_dim
         self.dropout_module = FairseqDropout(args.dropout, module_name=self.__class__.__name__)
         self.quant_noise = getattr(args, "quant_noise_pq", 0)

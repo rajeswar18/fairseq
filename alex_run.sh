@@ -17,8 +17,8 @@ rm -rf checkpoints/
 #embdim=712
 #ffndim=1424
 
-embdim=1024
-ffndim=2048
+embdim=512
+ffndim=1024
 
 #CUDA_VISIBLE_DEVICES=0
 python3 fairseq_cli/train.py \
@@ -40,6 +40,7 @@ python3 fairseq_cli/train.py \
     --eval-bleu-print-samples \
     --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
     --topk_ratio 1.0 \
-    --num_modules 2
+    --num_modules 2 \
+    --use_module_communication false
 
 #> out.txt
