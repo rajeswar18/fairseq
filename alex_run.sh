@@ -41,6 +41,6 @@ python3 fairseq_cli/train.py \
     --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
     --topk_ratio 1.0 \
     --num_modules 2 \
-    --use_module_communication false
+    --use_module_communication true
 
 #> out.txt
