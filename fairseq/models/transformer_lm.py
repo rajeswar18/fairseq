@@ -129,6 +129,8 @@ class TransformerLanguageModel(FairseqLanguageModel):
 
         parser.add_argument('--use_module_communication', type=str, metavar='D',default=True,help='use module comms')
 
+        parser.add_argument('--use_value_competition', type=str, metavar='D',default=True,help='use value comp')
+
         # fmt: on
 
     @classmethod

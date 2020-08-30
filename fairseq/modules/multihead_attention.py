@@ -18,6 +18,7 @@ from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.quant_noise import quant_noise
 
 from fairseq.modules.sparse_attn import SparseAttention
+from fairseq.modules.group_linear_layer import GroupLinearLayer
 
 @with_incremental_state
 class MultiheadAttention(nn.Module):
@@ -40,7 +41,8 @@ class MultiheadAttention(nn.Module):
         q_noise=0.0,
         qn_block_size=8,
         nblocks=1,
-        top_k_ratio=None
+        top_k_ratio=None,
+        use_value_competition=True
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -49,13 +51,23 @@ class MultiheadAttention(nn.Module):
         self.vdim = vdim if vdim is not None else embed_dim
         self.qkv_same_dim = self.kdim == embed_dim and self.vdim == embed_dim
 
+        self.use_value_competition = use_value_competition
+
+        if use_value_competition:
+            print("USING VALUE COMPETITION")
+            self.competition = nn.Linear(self.vdim, 1)
+
+        #if this line is on, reduce heads by #blocks
+        #num_heads = num_heads // nblocks
+
         self.num_heads = num_heads
         self.dropout_module = FairseqDropout(
             dropout, module_name=self.__class__.__name__
         )
 
-        print('heads', num_heads)
+        print('heads per block', num_heads)
         print('num blocks', nblocks)
+        print('heads*blocks (total heads)', num_heads*nblocks)
 
         if top_k_ratio is None:
             self.sa = None
@@ -85,6 +97,7 @@ class MultiheadAttention(nn.Module):
         self.q_proj = quant_noise(nn.Linear(embed_dim, self.head_dim * num_heads, bias=bias), q_noise, qn_block_size)
 
         self.out_proj = quant_noise(nn.Linear(self.head_dim * num_heads, embed_dim, bias=bias), q_noise, qn_block_size)
+
 
         if add_bias_kv:
             self.bias_k = Parameter(torch.Tensor(1, 1, embed_dim))
@@ -228,6 +241,12 @@ class MultiheadAttention(nn.Module):
             saved_state = None
 
         query = query.reshape((tgt_len, bsz * self.nblocks, self.embed_dim))
+
+        if value is not None and self.use_value_competition:
+            comp = self.competition(value).view((src_len, bsz, self.nblocks))
+            comp = F.softmax(comp, dim=2).view((src_len,bsz*self.nblocks,1))
+            comp = comp.repeat(1,1,self.head_dim * self.num_heads)
+
         if key is not None:
             key = key.reshape((src_len, bsz * self.nblocks, self.embed_dim))
             value = value.reshape((src_len, bsz * self.nblocks, self.embed_dim))
@@ -252,6 +271,9 @@ class MultiheadAttention(nn.Module):
             k = self.k_proj(key)
             v = self.v_proj(value)
         q *= self.scaling
+
+        if v is not None and self.use_value_competition:
+            v = v * comp
 
         if self.bias_k is not None:
             assert self.bias_v is not None

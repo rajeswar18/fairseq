@@ -152,7 +152,8 @@ class TransformerEncoderLayer(nn.Module):
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
             nblocks=self.nb,
-            top_k_ratio = args.topk_ratio
+            top_k_ratio = args.topk_ratio,
+            use_value_competition = args.use_value_competition.lower() == "true"
         )
 
     def upgrade_state_dict_named(self, state_dict, name):
@@ -323,6 +324,9 @@ class TransformerDecoderLayer(nn.Module):
             args.decoder_ffn_embed_dim, self.embed_dim, self.quant_noise, self.quant_noise_block_size
         )
 
+        print('params in self-attn', sum(p.numel() for p in self.self_attn.parameters()))
+        print('params in fc', sum(p.numel() for p in self.fc1.parameters()) + sum(p.numel() for p in self.fc2.parameters()))
+
         self.final_layer_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks, export=export)
         self.need_attn = True
 
@@ -347,7 +351,8 @@ class TransformerDecoderLayer(nn.Module):
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
             nblocks=self.nb,
-            top_k_ratio = args.topk_ratio
+            top_k_ratio = args.topk_ratio,
+            use_value_competition = args.use_value_competition.lower() == 'true'
         )
 
     def build_encoder_attention(self, embed_dim, args):
@@ -369,7 +374,8 @@ class TransformerDecoderLayer(nn.Module):
             q_noise=self.quant_noise,
             qn_block_size=self.quant_noise_block_size,
             nblocks=self.nb,
-            top_k_ratio = args.topk_ratio
+            top_k_ratio = args.topk_ratio,
+            use_value_competition = args.use_value_competition.lower() == 'true'
         )
 
     def prepare_for_onnx_export_(self):
@@ -403,6 +409,10 @@ class TransformerDecoderLayer(nn.Module):
         """
         if need_head_weights:
             need_attn = True
+
+        #print('x shape', x.shape)
+        #print('self attn mask', self_attn_mask.shape)
+        #print('self attn', self_attn_mask[0])
 
         residual = x
         if self.normalize_before:
