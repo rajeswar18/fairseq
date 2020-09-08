@@ -123,13 +123,13 @@ class TransformerLanguageModel(FairseqLanguageModel):
         parser.add_argument('--quant-noise-scalar', type=float, metavar='D', default=0,
                             help='scalar quantization noise and scalar quantization at training time')
         
-        parser.add_argument('--topk_ratio', type=float, metavar='D', default=0.75,help='scalar quantization noise and scalar quantization at training time')
+        parser.add_argument('--topk_ratio', type=float, metavar='D', default=1.0,help='scalar quantization noise and scalar quantization at training time')
         
-        parser.add_argument('--num_modules', type=int, metavar='D', default=2,help='scalar quantization noise and scalar quantization at training time')
+        parser.add_argument('--num_modules', type=int, metavar='D', default=1,help='scalar quantization noise and scalar quantization at training time')
 
-        parser.add_argument('--use_module_communication', type=str, metavar='D',default=True,help='use module comms')
+        parser.add_argument('--use_module_communication', type=str, metavar='D',default='false',help='use module comms')
 
-        parser.add_argument('--use_value_competition', type=str, metavar='D',default=True,help='use value comp')
+        parser.add_argument('--use_value_competition', type=str, metavar='D',default='false',help='use value comp')
 
         # fmt: on
 

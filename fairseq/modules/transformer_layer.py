@@ -31,14 +31,14 @@ class Attention(nn.Module):
         self.head_dim = 32
         self.scale = self.head_dim ** -0.5
 
-        self.query_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
-        self.key_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
-        self.value_net = nn.Linear(self.block_dim, self.head_dim * self.n_heads)
-        self.final = nn.Linear(self.head_dim * self.n_heads, self.block_dim)
+        self.query_net = GroupLinearLayer(self.block_dim, self.head_dim * self.n_heads, n_blocks)
+        self.key_net = GroupLinearLayer(self.block_dim, self.head_dim * self.n_heads, n_blocks)
+        self.value_net = GroupLinearLayer(self.block_dim, self.head_dim * self.n_heads, n_blocks)
+        self.final = GroupLinearLayer(self.head_dim * self.n_heads, self.block_dim, n_blocks)
 
     def forward(self, x):
         seq_len, bsz, _ = x.shape
-        x = x.view(seq_len, bsz, self.n_blocks, self.block_dim)
+        x = x.view(seq_len, bsz, self.n_blocks * self.block_dim)
 
         q = self.query_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
         k = self.key_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
@@ -53,7 +53,7 @@ class Attention(nn.Module):
         out = torch.matmul(score, v).transpose(2,3)
         score = score.mean(dim=2)
 
-        out = out.reshape(seq_len, bsz, self.n_blocks, self.head_dim * self.n_heads)
+        out = out.reshape(seq_len, bsz, self.n_blocks * self.head_dim * self.n_heads)
         out = self.final(out)
         out = out.view(seq_len, bsz, self.dim)
 
@@ -66,7 +66,10 @@ class NormLayer(nn.Module):
         self.num_rims = num_rims
         self.dim = dim
 
-        self.norm = LayerNorm(dim, export=export)
+        self.weight = nn.Parameter(torch.ones(1,1,dim*num_rims,))
+        self.bias = nn.Parameter(torch.zeros(1,1,dim*num_rims,))
+
+        self.norm = LayerNorm(dim, export=export, elementwise_affine=False)
 
     def forward(self, x):
         seq_len, bsz, _ = x.shape
@@ -75,6 +78,11 @@ class NormLayer(nn.Module):
         x = self.norm(x)
         
         x = x.view(seq_len, bsz, self.num_rims * self.dim)
+
+        weight_use = self.weight.repeat(seq_len, bsz, 1)
+        bias_use = self.bias.repeat(seq_len, bsz, 1)
+
+        x = x * weight_use + bias_use
 
         return x
  
@@ -145,7 +153,7 @@ class TransformerEncoderLayer(nn.Module):
 
     def build_self_attention(self, embed_dim, args):
         return MultiheadAttention(
-            embed_dim//self.nb,
+            embed_dim,
             args.encoder_attention_heads,
             dropout=args.attention_dropout,
             self_attention=True,
@@ -261,10 +269,15 @@ class TransformerDecoderLayer(nn.Module):
     """
 
     def __init__(
-        self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
+        self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False, layer_ind=None
     ):
         super().__init__()
-        self.blockatt = args.use_module_communication == "True" or args.use_module_communication == "true"
+        
+        if True or (layer_ind >= 2 and layer_ind < args.decoder_layers - 1):
+            self.blockatt = args.use_module_communication == "True" or args.use_module_communication == "true"
+        else:
+            self.blockatt = False
+
         self.embed_dim = args.decoder_embed_dim
         self.dropout_module = FairseqDropout(args.dropout, module_name=self.__class__.__name__)
         self.quant_noise = getattr(args, "quant_noise_pq", 0)
@@ -272,7 +285,18 @@ class TransformerDecoderLayer(nn.Module):
 
         self.cross_self_attention = getattr(args, "cross_self_attention", False)
 
-        self.nb = args.num_modules
+        if layer_ind >= 2 and layer_ind < args.decoder_layers - 1:
+            self.nb = args.num_modules
+        else:
+            self.nb = 1
+
+        if True and self.nb >= 2:
+            self.competition = GroupLinearLayer(self.embed_dim//self.nb, 1, self.nb, a=0.05)
+            self.comp_sm = nn.Softmax(dim=2)
+            print('using competition!')
+        else:
+            self.competition = None
+
         self.norm_blocks = args.num_modules
         print("SETUP TRANSFORMER DECODER LAYER")
 
@@ -342,7 +366,7 @@ class TransformerDecoderLayer(nn.Module):
 
     def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False):
         return MultiheadAttention(
-            embed_dim//self.nb,
+            embed_dim,
             args.decoder_attention_heads,
             dropout=args.attention_dropout,
             add_bias_kv=add_bias_kv,
@@ -359,13 +383,8 @@ class TransformerDecoderLayer(nn.Module):
         kdim = getattr(args, "encoder_embed_dim", None)
         vdim = getattr(args, "encoder_embed_dim", None)
 
-        if kdim is not None:
-            kdim = kdim//self.nb
-        if vdim is not None:
-            vdim = vdim//self.nb
-
         return MultiheadAttention(
-            embed_dim//self.nb,
+            embed_dim,
             args.decoder_attention_heads,
             kdim=kdim,
             vdim=vdim,
@@ -409,6 +428,16 @@ class TransformerDecoderLayer(nn.Module):
         """
         if need_head_weights:
             need_attn = True
+
+        if self.competition is not None:
+            comp = self.competition(x)
+            #comp = self.comp_sm(comp)
+            comp = F.sigmoid(comp)
+            #comp = F.gumbel_softmax(comp, tau=0.5, hard=False, dim=2)
+            comp = comp.unsqueeze(-1).repeat(1,1,1,self.embed_dim//self.nb)
+            comp = comp.view((x.shape[0], x.shape[1], self.embed_dim))
+        else:
+            comp = None
 
         #print('x shape', x.shape)
         #print('self attn mask', self_attn_mask.shape)
@@ -459,11 +488,14 @@ class TransformerDecoderLayer(nn.Module):
             key_padding_mask=self_attn_padding_mask,
             incremental_state=incremental_state,
             need_weights=False,
-            attn_mask=self_attn_mask,
+            attn_mask=self_attn_mask
         )
 
         x = self.dropout_module(x)
-        x = residual + x
+        if comp is None: 
+            x = residual + x
+        else:
+            x = residual + x*comp
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
 

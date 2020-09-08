@@ -17,8 +17,8 @@ rm -rf checkpoints_2mod/
 #embdim=712
 #ffndim=1424
 
-embdim=512
-ffndim=1024
+embdim=672
+ffndim=1344
 
 #CUDA_VISIBLE_DEVICES=0
 fairseq-train data-bin/iwslt17.de_fr.en.bpe16k/ \
@@ -43,7 +43,10 @@ fairseq-train data-bin/iwslt17.de_fr.en.bpe16k/ \
     --decoder-embed-dim $embdim \
     --decoder-ffn-embed-dim $ffndim \
     --use_module_communication true \
-    --use_value_competition true
+    --use_value_competition true \
+    --encoder-attention-heads 8 \
+    --decoder-attention-heads 8
+
 
 #8 / num_gpus
 

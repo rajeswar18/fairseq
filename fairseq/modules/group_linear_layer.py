@@ -7,12 +7,13 @@ import math
 
 class GroupLinearLayer(nn.Module):
 
-    def __init__(self, din, dout, num_blocks, bias=True):
+    def __init__(self, din, dout, num_blocks, bias=True, a = None):
         super(GroupLinearLayer, self).__init__()
         self.nb = num_blocks
         self.dout = dout
 
-        a = 1. / math.sqrt(dout)
+        if a is None:
+            a = 1. / math.sqrt(dout * num_blocks)
 
         #gain = 1.0 / math.sqrt(2)
         #a = gain * math.sqrt(6.0 / (din + dout))
