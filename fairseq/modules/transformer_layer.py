@@ -10,7 +10,8 @@ import torch
 import torch.nn as nn
 from fairseq import utils
 from fairseq.modules import LayerNorm, MultiheadAttention
-from fairseq.modules.group_linear_layer import GroupLinearLayer
+#from fairseq.modules.group_linear_layer import GroupLinearLayer
+from fairseq.modules.shared_group_linear_layer import SharedGroupLinearLayer as GroupLinearLayer
 
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.modules.fairseq_dropout import FairseqDropout
