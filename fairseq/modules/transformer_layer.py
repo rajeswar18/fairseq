@@ -431,8 +431,7 @@ class TransformerDecoderLayer(nn.Module):
 
         if self.competition is not None:
             comp = self.competition(x)
-            #comp = self.comp_sm(comp)
-            comp = F.sigmoid(comp)
+            comp = self.comp_sm(comp)
             #comp = F.gumbel_softmax(comp, tau=0.5, hard=False, dim=2)
             comp = comp.unsqueeze(-1).repeat(1,1,1,self.embed_dim//self.nb)
             comp = comp.view((x.shape[0], x.shape[1], self.embed_dim))
