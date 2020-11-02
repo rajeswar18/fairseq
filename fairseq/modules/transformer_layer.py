@@ -377,7 +377,6 @@ class TransformerDecoderLayer(nn.Module):
         if True and self.nb >= 2:
             self.competition = GroupLinearLayer(self.embed_dim//self.nb, 1, self.nb, a=0.05)
             self.comp_sm = nn.Softmax(dim=2)
-            self.comp_drop = nn.Dropout(0.2)
             print('using competition!')
         else:
             self.competition = None
@@ -524,7 +523,7 @@ class TransformerDecoderLayer(nn.Module):
             x = self.in_proj(x)
 
         if self.competition is not None:
-            comp = self.comp_drop(self.competition(x))
+            comp = self.competition(x)
             comp = self.comp_sm(comp)
             #comp = F.gumbel_softmax(comp, tau=0.5, hard=False, dim=2)
             comp = comp.unsqueeze(-1).repeat(1,1,1,self.embed_dim//self.nb)
@@ -610,8 +609,10 @@ class TransformerDecoderLayer(nn.Module):
             residual = x
             T,bsz,nhid = x.shape
             if comp is not None:
-                x *= comp
-            _, new_memory = self.memory_layer.forward_step(x.reshape((T*bsz, nhid)), self.memory_obj[0])
+                x_write = comp * x
+            else:
+                x_write = x*1.0
+            _, new_memory = self.memory_layer.forward_step(x_write.reshape((T*bsz, nhid)), self.memory_obj[0])
             self.memory_obj[0] = new_memory
             Tbs,num_slots,nhid_slot = new_memory.shape
             #x = x.reshape((T, bsz, nhid))
