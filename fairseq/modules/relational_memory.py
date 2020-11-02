@@ -95,7 +95,7 @@ class RelationalMemory(nn.Module):
         self.input_size = input_size
         self.input_projector = nn.Linear(self.input_size, self.mem_size)
 
-        self.output_projector = nn.Linear(self.output_size, self.input_size)
+        #self.output_projector = nn.Linear(self.output_size, self.input_size)
 
         ########## parameters for gating ##########
         self.num_gates = 2 * self.calculate_gate_size()

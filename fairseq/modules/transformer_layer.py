@@ -609,10 +609,12 @@ class TransformerDecoderLayer(nn.Module):
                 x = self.self_mem_norm(x)
             residual = x
             T,bsz,nhid = x.shape
+            if comp is not None:
+                x *= comp
             _, new_memory = self.memory_layer.forward_step(x.reshape((T*bsz, nhid)), self.memory_obj[0])
             self.memory_obj[0] = new_memory
             Tbs,num_slots,nhid_slot = new_memory.shape
-            x = x.reshape((T, bsz, nhid))
+            #x = x.reshape((T, bsz, nhid))
             mem_read = new_memory.reshape((T, bsz, num_slots*nhid_slot))
             x,_ = self.memory_attention(x, mem_read)
             x = residual + x
