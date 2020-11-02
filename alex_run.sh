@@ -24,6 +24,7 @@ ffndim=1024
 python3 fairseq_cli/train.py \
     data-bin/iwslt14.tokenized.de-en \
     --arch transformer_iwslt_de_en --share-decoder-input-output-embed \
+    --save-dir /scratch/lambalex/checkpoints/transformer_wikitext-103/$SLURM_JOB_ID \
     --encoder-embed-dim	$embdim \
     --encoder-ffn-embed-dim $ffndim \
     --decoder-embed-dim	$embdim \
@@ -40,7 +41,9 @@ python3 fairseq_cli/train.py \
     --eval-bleu-print-samples \
     --best-checkpoint-metric bleu --maximize-best-checkpoint-metric \
     --topk_ratio 1.0 \
-    --num_modules 2 \
+    --num_modules 4 \
     --use_module_communication true
+
+
 
 #> out.txt

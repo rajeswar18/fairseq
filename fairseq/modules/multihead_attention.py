@@ -17,8 +17,8 @@ from fairseq.incremental_decoding_utils import with_incremental_state
 from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.quant_noise import quant_noise
 
-#from fairseq.modules.group_linear_layer import GroupLinearLayer
-from fairseq.modules.shared_group_linear_layer import SharedGroupLinearLayer as GroupLinearLayer
+from fairseq.modules.group_linear_layer import GroupLinearLayer
+#from fairseq.modules.shared_group_linear_layer import SharedGroupLinearLayer as GroupLinearLayer
 
 @with_incremental_state
 class MultiheadAttention(nn.Module):

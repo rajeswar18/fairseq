@@ -10,8 +10,13 @@ import torch
 import torch.nn as nn
 from fairseq import utils
 from fairseq.modules import LayerNorm, MultiheadAttention
-#from fairseq.modules.group_linear_layer import GroupLinearLayer
-from fairseq.modules.shared_group_linear_layer import SharedGroupLinearLayer as GroupLinearLayer
+from fairseq.modules.relational_memory import RelationalMemory
+from fairseq.modules.group_linear_layer import GroupLinearLayer
+#from fairseq.modules.shared_group_linear_layer import SharedGroupLinearLayer
+
+from fairseq.modules.basic_mha import MemoryAttention
+
+import random
 
 from fairseq.modules.quant_noise import quant_noise
 from fairseq.modules.fairseq_dropout import FairseqDropout
@@ -20,16 +25,18 @@ from torch import Tensor
 import torch.nn.functional as F
 
 class Attention(nn.Module):
-    def __init__(self, n_heads, n_blocks, dim):
+    def __init__(self, n_heads, n_blocks, dim, use_nfm):
         super(Attention, self).__init__()
 
+        self.use_nfm = use_nfm
+
         #self.n_heads = n_heads
-        self.n_heads = 2
+        self.n_heads = 12
         self.n_blocks = n_blocks
         self.dim = dim
         self.block_dim = dim // self.n_blocks
         #self.head_dim = self.block_dim // self.n_heads
-        self.head_dim = 32
+        self.head_dim = 64
         self.scale = self.head_dim ** -0.5
 
         self.query_net = GroupLinearLayer(self.block_dim, self.head_dim * self.n_heads, n_blocks)
@@ -37,21 +44,54 @@ class Attention(nn.Module):
         self.value_net = GroupLinearLayer(self.block_dim, self.head_dim * self.n_heads, n_blocks)
         self.final = GroupLinearLayer(self.head_dim * self.n_heads, self.block_dim, n_blocks)
 
-    def forward(self, x):
-        seq_len, bsz, _ = x.shape
-        x = x.view(seq_len, bsz, self.n_blocks * self.block_dim)
+    def forward(self, x, qkv=None):
 
-        q = self.query_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
-        k = self.key_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
-        v = self.value_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
-        
+        use_exshare = False
+
+        if qkv is not None:
+            klst, vlst = qkv
+
+        seq_len, bsz, _ = x.shape
+
+
+        if use_exshare:
+            x = x.view(seq_len, bsz, self.n_blocks * self.block_dim)
+            q = self.query_net(x).view(seq_len, 1, bsz*self.n_blocks, self.n_heads, self.head_dim)
+            k = self.key_net(x).view(seq_len, 1, bsz*self.n_blocks, self.n_heads, self.head_dim)
+            v = self.value_net(x).view(seq_len, 1, bsz*self.n_blocks, self.n_heads, self.head_dim)
+        else:
+            x = x.view(seq_len, bsz, self.n_blocks * self.block_dim)
+            q = self.query_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
+            k = self.key_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
+            v = self.value_net(x).view(seq_len, bsz, self.n_blocks, self.n_heads, self.head_dim)
+
         q = q.transpose(2,3) * self.scale
         k = k.transpose(2,3)
         v = v.transpose(2,3)
 
+        if random.uniform(0,1) < 0.00001:
+            print('use NFM?', self.use_nfm)
+
+        if self.use_nfm:
+            if qkv is not None:
+                klst.append(k)
+                vlst.append(v)
+                #print('len qlst', len(qlst))
+                #for kval in klst:
+                #    print(kval.shape)
+
+            k = torch.cat(klst, dim=3)
+            v = torch.cat(vlst, dim=3)
+
+
+        #should return these q,k,v and save to a big list.  Also pull in from the list passed in and concat along dim=3, i.e. so that it's nblocks * nlayers.  
+        #print('running comm attention with shapes', q.shape, k.shape, v.shape)
+
         score = torch.matmul(q, k.transpose(3,4))
+        #print('score shape', score.shape)
         score = F.softmax(score, dim=-1)
         out = torch.matmul(score, v).transpose(2,3)
+        #print('out shape', out.shape)
         score = score.mean(dim=2)
 
         out = out.reshape(seq_len, bsz, self.n_blocks * self.head_dim * self.n_heads)
@@ -102,17 +142,26 @@ class TransformerEncoderLayer(nn.Module):
         args (argparse.Namespace): parsed command-line arguments
     """
 
-    def __init__(self, args):
+    def __init__(self, args, layer_ind=None):
         super().__init__()
-        self.blockatt = args.use_module_communication == "True" or args.use_module_communication == "true"
+
+        if True or (layer_ind >= 2 and layer_ind < args.decoder_layers - 1):
+            self.blockatt = args.use_module_communication == "True" or args.use_module_communication == "true"
+        else:
+            self.blockatt = False
+
         self.embed_dim = args.encoder_embed_dim
         self.quant_noise = getattr(args, "quant_noise_pq", 0)
         self.quant_noise_block_size = getattr(args, "quant_noise_pq_block_size", 8)
  
         print('encoder embed_dim', self.embed_dim)
 
-        self.nb = args.num_modules
-        self.norm_blocks = args.num_modules
+        if layer_ind >= 2 and layer_ind < args.decoder_layers - 1:
+            self.nb = args.num_modules
+        else:
+            self.nb = 1
+
+        self.norm_blocks = self.nb
 
         self.self_attn = self.build_self_attention(self.embed_dim, args) #should divide embed_dim by nb.  Then raise embed_dim in args
         self.self_attn_layer_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
@@ -162,7 +211,7 @@ class TransformerEncoderLayer(nn.Module):
             qn_block_size=self.quant_noise_block_size,
             nblocks=self.nb,
             top_k_ratio = args.topk_ratio,
-            use_value_competition = args.use_value_competition.lower() == "true"
+            use_value_competition = False
         )
 
     def upgrade_state_dict_named(self, state_dict, name):
@@ -202,6 +251,8 @@ class TransformerEncoderLayer(nn.Module):
         # will become -inf, which results in NaN in model parameters
 
         seq_len, bsz, _ = x.shape
+
+        
 
         if attn_mask is not None:
             attn_mask = attn_mask.masked_fill(attn_mask.to(torch.bool), -1e8)
@@ -278,11 +329,21 @@ class TransformerDecoderLayer(nn.Module):
             self.blockatt = args.use_module_communication == "True" or args.use_module_communication == "true"
         else:
             self.blockatt = False
+        
+
+        self.use_nfm = args.use_nfm == 'True' or args.use_nfm == 'true'
+
+        print('using nfm?', self.use_nfm)
 
         self.embed_dim = args.decoder_embed_dim
         self.dropout_module = FairseqDropout(args.dropout, module_name=self.__class__.__name__)
         self.quant_noise = getattr(args, "quant_noise_pq", 0)
         self.quant_noise_block_size = getattr(args, "quant_noise_pq_block_size", 8)
+
+        self.embed_dim = args.decoder_embed_dim
+        self.decoder_ffn_embed_dim = args.decoder_ffn_embed_dim
+        self.decoder_attention_heads = args.decoder_attention_heads
+
 
         self.cross_self_attention = getattr(args, "cross_self_attention", False)
 
@@ -291,9 +352,32 @@ class TransformerDecoderLayer(nn.Module):
         else:
             self.nb = 1
 
+        if self.nb == 2:
+            self.embed_dim = int(self.embed_dim*1.5)
+            self.decoder_ffn_embed_dim = int(self.decoder_ffn_embed_dim*1.5)
+            self.decoder_attention_heads = int(self.decoder_attention_heads*1.5)
+        if self.nb == 4:
+            self.embed_dim = int(self.embed_dim*2)
+            self.decoder_ffn_embed_dim = int(self.decoder_ffn_embed_dim*2)
+            self.decoder_attention_heads = int(self.decoder_attention_heads*2)
+
+        print('embed dim', self.embed_dim, 'ffn dim', self.decoder_ffn_embed_dim)
+
+        if layer_ind == 2:
+            self.in_proj = nn.Linear(args.decoder_embed_dim,self.embed_dim)
+        else:
+            self.in_proj = None
+
+        if layer_ind == args.decoder_layers - 2:
+            self.out_proj = nn.Linear(self.embed_dim, args.decoder_embed_dim)
+        else:
+            self.out_proj = None
+
+        self.layer_ind = layer_ind
         if True and self.nb >= 2:
             self.competition = GroupLinearLayer(self.embed_dim//self.nb, 1, self.nb, a=0.05)
             self.comp_sm = nn.Softmax(dim=2)
+            self.comp_drop = nn.Dropout(0.2)
             print('using competition!')
         else:
             self.competition = None
@@ -308,8 +392,14 @@ class TransformerDecoderLayer(nn.Module):
             add_zero_attn=add_zero_attn,
         )
         if self.blockatt:
-            self.self_comm = Attention(args.decoder_attention_heads, self.nb, self.embed_dim)
+            self.self_comm = Attention(self.decoder_attention_heads, self.nb, self.embed_dim, self.use_nfm)
             self.self_comm_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
+            self.self_mem_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
+            
+
+            self.memory_layer = RelationalMemory(mem_slots=10, head_size=32, input_size=self.embed_dim, output_size=self.embed_dim, num_heads=4, num_blocks=1, forget_bias=1., input_bias=0., gate_style='unit')
+
+            self.memory_attention = MemoryAttention(n_blocks_query=self.nb, n_blocks_val=10, dim_query=self.embed_dim, dim_val=10*32*4)
 
         self.activation_fn = utils.get_activation_fn(
             activation=getattr(args, "activation_fn", "relu")
@@ -338,15 +428,15 @@ class TransformerDecoderLayer(nn.Module):
             self.encoder_attn_layer_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks, export=export)
             if self.blockatt:
                 self.encoder_comm_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
-                self.encoder_comm = Attention(args.decoder_attention_heads, self.nb, self.embed_dim)
+                self.encoder_comm = Attention(self.decoder_attention_heads, self.nb, self.embed_dim, self.use_nfm)
 
         print('setup transformer layer decoder blocks: ', self.nb)
 
         self.fc1 = self.build_fc1(
-            self.embed_dim, args.decoder_ffn_embed_dim, self.quant_noise, self.quant_noise_block_size
+            self.embed_dim, self.decoder_ffn_embed_dim, self.quant_noise, self.quant_noise_block_size
         )
         self.fc2 = self.build_fc2(
-            args.decoder_ffn_embed_dim, self.embed_dim, self.quant_noise, self.quant_noise_block_size
+            self.decoder_ffn_embed_dim, self.embed_dim, self.quant_noise, self.quant_noise_block_size
         )
 
         print('params in self-attn', sum(p.numel() for p in self.self_attn.parameters()))
@@ -368,7 +458,7 @@ class TransformerDecoderLayer(nn.Module):
     def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False):
         return MultiheadAttention(
             embed_dim,
-            args.decoder_attention_heads,
+            self.decoder_attention_heads,
             dropout=args.attention_dropout,
             add_bias_kv=add_bias_kv,
             add_zero_attn=add_zero_attn,
@@ -377,7 +467,7 @@ class TransformerDecoderLayer(nn.Module):
             qn_block_size=self.quant_noise_block_size,
             nblocks=self.nb,
             top_k_ratio = args.topk_ratio,
-            use_value_competition = args.use_value_competition.lower() == 'true'
+            use_value_competition = False
         )
 
     def build_encoder_attention(self, embed_dim, args):
@@ -386,7 +476,7 @@ class TransformerDecoderLayer(nn.Module):
 
         return MultiheadAttention(
             embed_dim,
-            args.decoder_attention_heads,
+            self.decoder_attention_heads,
             kdim=kdim,
             vdim=vdim,
             dropout=args.attention_dropout,
@@ -395,7 +485,7 @@ class TransformerDecoderLayer(nn.Module):
             qn_block_size=self.quant_noise_block_size,
             nblocks=self.nb,
             top_k_ratio = args.topk_ratio,
-            use_value_competition = args.use_value_competition.lower() == 'true'
+            use_value_competition = False
         )
 
     def prepare_for_onnx_export_(self):
@@ -430,8 +520,11 @@ class TransformerDecoderLayer(nn.Module):
         if need_head_weights:
             need_attn = True
 
+        if self.in_proj is not None:
+            x = self.in_proj(x)
+
         if self.competition is not None:
-            comp = self.competition(x)
+            comp = self.comp_drop(self.competition(x))
             comp = self.comp_sm(comp)
             #comp = F.gumbel_softmax(comp, tau=0.5, hard=False, dim=2)
             comp = comp.unsqueeze(-1).repeat(1,1,1,self.embed_dim//self.nb)
@@ -504,12 +597,30 @@ class TransformerDecoderLayer(nn.Module):
                 x = self.self_comm_norm(x)
 
             residual = x
-            x, _ = self.self_comm(x)
+            x, _ = self.self_comm(x, (self.klst,self.vlst))
             x = self.dropout_module(x)
             x = residual + x
             
             if not self.normalize_before:
                 x = self.self_comm_norm(x)
+
+
+
+            if self.normalize_before:
+                x = self.self_mem_norm(x)
+            residual = x
+            T,bsz,nhid = x.shape
+            _, new_memory = self.memory_layer.forward_step(x.reshape((T*bsz, nhid)), self.memory_obj[0])
+            self.memory_obj[0] = new_memory
+            Tbs,num_slots,nhid_slot = new_memory.shape
+            x = x.reshape((T, bsz, nhid))
+            mem_read = new_memory.reshape((T, bsz, num_slots*nhid_slot))
+            x,_ = self.memory_attention(x, mem_read)
+            x = residual + x
+            
+            if not self.normalize_before:
+                x = self.self_mem_norm(x)
+
 
         if self.encoder_attn is not None:
             residual = x
@@ -565,6 +676,10 @@ class TransformerDecoderLayer(nn.Module):
         x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
+        
+        if self.out_proj is not None:
+            x = self.out_proj(x)
+        
         if self.onnx_trace and incremental_state is not None:
             saved_state = self.self_attn._get_input_buffer(incremental_state)
             assert saved_state is not None
@@ -577,6 +692,9 @@ class TransformerDecoderLayer(nn.Module):
             else:
                 self_attn_state = [saved_state["prev_key"], saved_state["prev_value"]]
             return x, attn, self_attn_state
+        
+
+        
         return x, attn, None
 
     def make_generation_fast_(self, need_attn: bool = False, **kwargs):

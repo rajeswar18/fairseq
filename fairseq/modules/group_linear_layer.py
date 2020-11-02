@@ -75,7 +75,9 @@ class GroupMLP(nn.Module):
 
 if __name__ == "__main__":
     
-    GLN = GroupLinearLayer(512, 1024, 2, bias=True)
+    GLN = GroupLinearLayer(512, 512, 2, bias=True)
+
+    print('params', sum(g.numel() for g in GLN.parameters()))
 
     #bs, blocks, nhid
     x = torch.randn(64,12,2*512)

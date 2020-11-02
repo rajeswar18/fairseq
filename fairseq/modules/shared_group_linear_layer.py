@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-
+import random
 
 class GroupLinearLayer(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
@@ -26,23 +26,39 @@ class GroupLinearLayer(nn.Module):
 class SharedGroupLinearLayer(nn.Module):
     """All the parameters are shared using soft attention this layer is used for sharing Q,K,V parameters of MHA"""
 
-    def __init__(self, din, dout, num_blocks, bias=True, a=None, n_templates=None):
+    def __init__(self, din, dout, num_blocks, ns = None, bias=True, a=None):
         super(SharedGroupLinearLayer, self).__init__()
 
-        if n_templates is None:
-            n_templates = num_blocks
+        if ns is None:
+            ns = 2#num_blocks
+    
+        if num_blocks == 1:
+            n_templates = 1
+        else:
+            n_templates = ns
 
-        self.w = nn.ModuleList([nn.Linear(din,dout) for _ in range(0,n_templates)])
-        self.gll_write = GroupLinearLayer(dout, 16, n_templates)
-        self.gll_read = GroupLinearLayer(din,16,1)
+        print('nb', num_blocks, 'ns', n_templates)
         self.nb = num_blocks
+        self.w = nn.ModuleList([nn.Linear(din,dout) for _ in range(0,n_templates)])
+        #self.gll_write = GroupLinearLayer(dout, 16, n_templates)
+        #self.gll_read = GroupLinearLayer(din,16,1)
+        
+
+        self.gll_read = GroupLinearLayer(din,n_templates,1)
+
+        #self.nb = num_blocks
+
+        self.module_emb = nn.Parameter(0.1 * torch.randn(1,1,din*self.nb))
 
         self.weight = self.w[0].weight
         self.bias = None
 
     def forward(self,x):
         T,bsz,_ = x.shape
-        x = x.reshape((x.shape[0]*x.shape[1], self.nb, x.shape[2]//self.nb))
+
+        new_x = x + self.module_emb.repeat(T, bsz, 1)
+
+        x = new_x.reshape((x.shape[0]*x.shape[1], self.nb, x.shape[2]//self.nb))
         #input size (bs,num_blocks,din), required matching num_blocks vs n_templates
         bs_size = x.shape[0]
         k = x.shape[1]
@@ -54,11 +70,21 @@ class SharedGroupLinearLayer(nn.Module):
             x_next.append(x_next_l)
         x_next = torch.stack(x_next,1) #(k*bs,n_templates,dout)
 
-        x_write = self.gll_write(x_next)
-
-
         sm = nn.Softmax(2)
-        att = sm(torch.bmm(x_read, x_write.permute(0, 2, 1)))
+
+        #x_write = self.gll_write(self.w_dropout(x_next))
+        #sm = nn.Softmax(2)
+        #att = sm(torch.bmm(x_read, x_write.permute(0, 2, 1)))
+
+        att = sm(x_read)
+
+        if False and random.uniform(0,1) < 0.001:
+            print('shared-layer att min mean max', att.shape, att.min(), att.mean(), att.max())
+            print(att[20])
+            print(att[-20])
+            print(att[-40])
+            print(att[-200])
+            print(att[300])
 
         x_next = torch.bmm(att, x_next)
 
@@ -71,16 +97,21 @@ class SharedGroupLinearLayer(nn.Module):
 
 if __name__ == "__main__":
 
-    nb = 2
-    ns = 4
-    din = 128
-    dout = 256
+    nb = 4
+    ns = 2
+    din = 512
+    dout = 512
     GLN = SharedGroupLinearLayer(din,dout,nb,ns)
+
+    #for g in GLN.parameters():
+    #    print(g.shape)
+
+    print('params', sum(g.numel() for g in GLN.parameters()))
 
     T = 10
     bs = 10
 
-    x = torch.randn(T,bs,nb*128)
+    x = torch.randn(T,bs,nb*din)
     print('x shape', x.shape)
     #x = torch.randn(bs,nb,128)
 

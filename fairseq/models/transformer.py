@@ -26,6 +26,7 @@ from fairseq.modules import (
     SinusoidalPositionalEmbedding,
     TransformerDecoderLayer,
     TransformerEncoderLayer,
+    RelationalMemory
 )
 from fairseq.modules.quant_noise import quant_noise as apply_quant_noise_
 from torch import Tensor
@@ -177,6 +178,8 @@ class TransformerModel(FairseqEncoderDecoderModel):
         parser.add_argument('--num_modules', type=int, metavar='D', default=2,help='scalar quantization noise and scalar quantization at training time')
         parser.add_argument('--use_module_communication', type=str, metavar='D',default=True,help='use module comms')
         
+        parser.add_argument('--use_nfm', type=str, metavar='D',default=True,help='use nfm')
+
         parser.add_argument('--use_value_competition', type=str, metavar='D',default=True,help='use value comp')
         # fmt: on
 
@@ -353,7 +356,7 @@ class TransformerEncoder(FairseqEncoder):
         else:
             self.layers = nn.ModuleList([])
         self.layers.extend(
-            [self.build_encoder_layer(args) for i in range(args.encoder_layers)]
+            [self.build_encoder_layer(args, layer_ind = i) for i in range(args.encoder_layers)]
         )
         self.num_layers = len(self.layers)
 
@@ -366,8 +369,8 @@ class TransformerEncoder(FairseqEncoder):
         else:
             self.layernorm_embedding = None
 
-    def build_encoder_layer(self, args):
-        return TransformerEncoderLayer(args)
+    def build_encoder_layer(self, args, layer_ind):
+        return TransformerEncoderLayer(args, layer_ind=layer_ind)
 
     def forward_embedding(self, src_tokens):
         # embed tokens and positions
@@ -547,6 +550,8 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         embed_dim = args.decoder_embed_dim
         self.embed_dim = embed_dim
         self.output_embed_dim = args.decoder_output_dim
+
+
 
         self.padding_idx = embed_tokens.padding_idx
         self.max_target_positions = args.max_target_positions
@@ -777,6 +782,18 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         # decoder layers
         attn: Optional[Tensor] = None
         inner_states: List[Optional[Tensor]] = [x]
+        
+        klst = []
+        vlst = []
+        
+        initial_state = self.layers[0].memory_layer.initial_state(batch_size=x.shape[0]*x.shape[1]).type(torch.float16).cuda()
+        memory_obj = [initial_state]
+
+        for layer in self.layers:
+            layer.klst = klst
+            layer.vlst = vlst
+            layer.memory_obj = memory_obj
+
         for idx, layer in enumerate(self.layers):
             if incremental_state is None and not full_context_alignment:
                 self_attn_mask = self.buffered_future_mask(x)

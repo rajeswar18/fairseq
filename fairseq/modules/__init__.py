@@ -34,6 +34,7 @@ from .transformer_layer import TransformerDecoderLayer, TransformerEncoderLayer
 from .vggblock import VGGBlock
 from .group_linear_layer import GroupLinearLayer
 from .sparse_attn import SparseAttention
+from .relational_memory import RelationalMemory
 
 __all__ = [
     'AdaptiveInput',
@@ -72,4 +73,5 @@ __all__ = [
     'TransformerEncoderLayer',
     'VGGBlock',
     'unfold1d',
+    'RelationalMemory'
 ]
