@@ -786,7 +786,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         klst = []
         vlst = []
         
-        initial_state = self.layers[0].memory_layer.initial_state(batch_size=x.shape[0]*x.shape[1]).type(torch.float16).to(x.device)
+        initial_state = self.layers[0].memory_layer.initial_state(batch_size=x.shape[0]*x.shape[1]).type(x.dtype).to(x.device)
         memory_obj = [initial_state]
 
         for layer in self.layers:

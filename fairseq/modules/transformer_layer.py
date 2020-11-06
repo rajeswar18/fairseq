@@ -376,7 +376,7 @@ class TransformerDecoderLayer(nn.Module):
         self.layer_ind = layer_ind
         if True and self.nb >= 2:
             self.competition = GroupLinearLayer(self.embed_dim//self.nb, 1, self.nb, a=0.05)
-            self.comp_sm = nn.Softmax(dim=2)
+            self.comp_sm = nn.Sigmoid()#nn.Softmax(dim=2)
             print('using competition!')
         else:
             self.competition = None
@@ -396,9 +396,9 @@ class TransformerDecoderLayer(nn.Module):
             self.self_mem_norm = NormLayer(self.norm_blocks, self.embed_dim // self.norm_blocks)
             
 
-            self.memory_layer = RelationalMemory(mem_slots=10, head_size=32, input_size=self.embed_dim, output_size=self.embed_dim, num_heads=8, num_blocks=1, forget_bias=1., input_bias=0., gate_style='unit')
+            self.memory_layer = RelationalMemory(mem_slots=5, head_size=32, input_size=self.embed_dim, output_size=self.embed_dim, num_heads=4, num_blocks=1, forget_bias=1., input_bias=0., gate_style='unit')
 
-            self.memory_attention = MemoryAttention(n_blocks_query=self.nb, n_blocks_val=10, dim_query=self.embed_dim, dim_val=10*32*8)
+            self.memory_attention = MemoryAttention(n_blocks_query=self.nb, n_blocks_val=10, dim_query=self.embed_dim, dim_val=5*32*4)
 
         self.activation_fn = utils.get_activation_fn(
             activation=getattr(args, "activation_fn", "relu")
@@ -591,19 +591,19 @@ class TransformerDecoderLayer(nn.Module):
         if not self.normalize_before:
             x = self.self_attn_layer_norm(x)
 
-        if self.blockatt:
-            if self.normalize_before:
-                x = self.self_comm_norm(x)
+#        if self.blockatt:
+#            if self.normalize_before:
+#                x = self.self_comm_norm(x)
 
-            residual = x
-            x, _ = self.self_comm(x, (self.klst,self.vlst))
-            x = self.dropout_module(x)
-            x = residual + x
+#            residual = x
+#            x, _ = self.self_comm(x, (self.klst,self.vlst))
+#            x = self.dropout_module(x)
+#            x = residual + x
             
-            if not self.normalize_before:
-                x = self.self_comm_norm(x)
+#            if not self.normalize_before:
+#                x = self.self_comm_norm(x)
 
-
+        if self.blockatt: 
             if self.normalize_before:
                 x = self.self_mem_norm(x)
             residual = x
@@ -615,7 +615,6 @@ class TransformerDecoderLayer(nn.Module):
             _, new_memory = self.memory_layer.forward_step(x_write.reshape((T*bsz, nhid)), self.memory_obj[0])
             self.memory_obj[0] = new_memory
             Tbs,num_slots,nhid_slot = new_memory.shape
-            #x = x.reshape((T, bsz, nhid))
             mem_read = new_memory.reshape((T, bsz, num_slots*nhid_slot))
             x,_ = self.memory_attention(x, mem_read)
             x = residual + x
