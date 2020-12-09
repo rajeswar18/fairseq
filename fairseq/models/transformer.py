@@ -597,10 +597,16 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             self.layers = LayerDropModuleList(p=self.decoder_layerdrop)
         else:
             self.layers = nn.ModuleList([])
+
+        self.depth_levels = args.decoder_layers
+        num_functions = 3
+
+        self.nfm = AttentiveNFM(n_heads=8, n_blocks=2, dim=args.embed_dim)
+
         self.layers.extend(
             [
                 self.build_decoder_layer(args, no_encoder_attn, layer_ind=layer_ind)
-                for layer_ind in range(args.decoder_layers)
+                for layer_ind in range(num_functions)
             ]
         )
         self.num_layers = len(self.layers)
@@ -783,34 +789,37 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         attn: Optional[Tensor] = None
         inner_states: List[Optional[Tensor]] = [x]
         
-        klst = []
-        vlst = []
         
-        initial_state = self.layers[0].memory_layer.initial_state(batch_size=x.shape[0]*x.shape[1]).type(x.dtype).to(x.device)
-        memory_obj = [initial_state]
+        #initial_state = self.layers[0].memory_layer.initial_state(batch_size=x.shape[0]*x.shape[1]).type(x.dtype).to(x.device)
+        #memory_obj = [initial_state]
 
-        for layer in self.layers:
-            layer.klst = klst
-            layer.vlst = vlst
-            layer.memory_obj = memory_obj
+        for depth in self.depth_levels:
+            raise Exception('done')
 
-        for idx, layer in enumerate(self.layers):
-            if incremental_state is None and not full_context_alignment:
-                self_attn_mask = self.buffered_future_mask(x)
-            else:
-                self_attn_mask = None
+            for idx, layer in enumerate(self.layers):
+                if incremental_state is None and not full_context_alignment:
+                    self_attn_mask = self.buffered_future_mask(x)
+                else:
+                    self_attn_mask = None
 
-            x, layer_attn, _ = layer(
-                x,
-                encoder_out.encoder_out if encoder_out is not None else None,
-                encoder_out.encoder_padding_mask if encoder_out is not None else None,
-                incremental_state,
-                self_attn_mask=self_attn_mask,
-                self_attn_padding_mask=self_attn_padding_mask,
-                need_attn=bool((idx == alignment_layer)),
-                need_head_weights=bool((idx == alignment_layer)),
-            )
+                func_out, layer_attn, _ = layer(
+                    x,
+                    encoder_out.encoder_out if encoder_out is not None else None,
+                    encoder_out.encoder_padding_mask if encoder_out is not None else None,
+                    incremental_state,
+                    self_attn_mask=self_attn_mask,
+                    self_attn_padding_mask=self_attn_padding_mask,
+                    need_attn=bool((idx == alignment_layer)),
+                    need_head_weights=bool((idx == alignment_layer)),
+                )
+
+                self.nfm.update_kv(func_out)
+
+
+            x = self.nfm(x)
+
             inner_states.append(x)
+            
             if layer_attn is not None and idx == alignment_layer:
                 attn = layer_attn.float().to(x)
 
