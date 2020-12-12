@@ -597,12 +597,30 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             self.layers = LayerDropModuleList(p=self.decoder_layerdrop)
         else:
             self.layers = nn.ModuleList([])
-        self.layers.extend(
-            [
-                self.build_decoder_layer(args, no_encoder_attn, layer_ind=layer_ind)
-                for layer_ind in range(args.decoder_layers)
-            ]
-        )
+        
+        self.num_functions = 2
+        shared_params = False
+        print('sharing params across layers?', shared_params)
+        print('num functions?', num_functions)
+
+        if shared_params:
+            #first two layers not shared
+            self.layers.extend(
+                [nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=layer_ind) for _ in range(num_functions)]) for layer_ind in range(0,2)]
+            )
+
+            shared_layer = nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=2)] for _ in range(num_functions))
+
+            for k in range(2, args.decoder_layers):
+                self.layers.extend([shared_layer])
+
+
+        else:
+            self.layers.extend(
+                [nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=layer_ind) for _ in range(num_functions)]) for layer_ind in range(args.decoder_layers)]
+            )
+
+
         self.num_layers = len(self.layers)
 
         if args.decoder_normalize_before and not getattr(
@@ -790,9 +808,10 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         memory_obj = [initial_state]
 
         for layer in self.layers:
-            layer.klst = klst
-            layer.vlst = vlst
-            layer.memory_obj = memory_obj
+            for func in layer:
+                func.klst = klst
+                func.vlst = vlst
+                func.memory_obj = memory_obj
 
         for idx, layer in enumerate(self.layers):
             if incremental_state is None and not full_context_alignment:
@@ -800,17 +819,24 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             else:
                 self_attn_mask = None
 
-            x, layer_attn, _ = layer(
-                x,
-                encoder_out.encoder_out if encoder_out is not None else None,
-                encoder_out.encoder_padding_mask if encoder_out is not None else None,
-                incremental_state,
-                self_attn_mask=self_attn_mask,
-                self_attn_padding_mask=self_attn_padding_mask,
-                need_attn=bool((idx == alignment_layer)),
-                need_head_weights=bool((idx == alignment_layer)),
-            )
-            inner_states.append(x)
+            xfuncs = []
+            for func in layer: 
+                x_func, layer_attn, _ = layer(
+                    x,
+                    encoder_out.encoder_out if encoder_out is not None else None,
+                    encoder_out.encoder_padding_mask if encoder_out is not None else None,
+                    incremental_state,
+                    self_attn_mask=self_attn_mask,
+                    self_attn_padding_mask=self_attn_padding_mask,
+                    need_attn=bool((idx == alignment_layer)),
+                    need_head_weights=bool((idx == alignment_layer)),
+                )
+                inner_states.append(x_func)
+
+                xfuncs.append(x_func)
+
+            x = xfuncs[0] #TODO: just taking first function for next layer, but should really pick with softmax or something.
+
             if layer_attn is not None and idx == alignment_layer:
                 attn = layer_attn.float().to(x)
 
