@@ -208,10 +208,10 @@ class RelationalMemory(nn.Module):
         q, k, v = torch.split(qkv_transpose, [self.key_size, self.key_size, self.value_size], -1)
 
         # scale q with d_k, the dimensionality of the key vectors
-        q *= (self.key_size ** -0.5)
+        q_use = q * (self.key_size ** -0.5)
 
         # make it [B, H, N, N]
-        dot_product = torch.matmul(q, k.permute(0, 1, 3, 2))
+        dot_product = torch.matmul(q_use, k.permute(0, 1, 3, 2))
         weights = F.softmax(dot_product, dim=-1)
 
         # output is [B, H, N, V]

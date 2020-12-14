@@ -601,15 +601,15 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         self.num_functions = 2
         shared_params = False
         print('sharing params across layers?', shared_params)
-        print('num functions?', num_functions)
+        print('num functions?', self.num_functions)
 
         if shared_params:
             #first two layers not shared
             self.layers.extend(
-                [nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=layer_ind) for _ in range(num_functions)]) for layer_ind in range(0,2)]
+                [nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=layer_ind) for _ in range(self.num_functions)]) for layer_ind in range(0,2)]
             )
 
-            shared_layer = nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=2)] for _ in range(num_functions))
+            shared_layer = nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=2)] for _ in range(self.num_functions))
 
             for k in range(2, args.decoder_layers):
                 self.layers.extend([shared_layer])
@@ -617,7 +617,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
         else:
             self.layers.extend(
-                [nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=layer_ind) for _ in range(num_functions)]) for layer_ind in range(args.decoder_layers)]
+                [nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=layer_ind) for _ in range(self.num_functions)]) for layer_ind in range(args.decoder_layers)]
             )
 
 
@@ -804,7 +804,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         klst = []
         vlst = []
         
-        initial_state = self.layers[0].memory_layer.initial_state(batch_size=x.shape[0]*x.shape[1]).type(x.dtype).to(x.device)
+        initial_state = self.layers[0][0].memory_layer.initial_state(batch_size=x.shape[0]*x.shape[1]).type(x.dtype).to(x.device)
         memory_obj = [initial_state]
 
         for layer in self.layers:
@@ -821,7 +821,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
             xfuncs = []
             for func in layer: 
-                x_func, layer_attn, _ = layer(
+                x_func, layer_attn, _ = func(
                     x,
                     encoder_out.encoder_out if encoder_out is not None else None,
                     encoder_out.encoder_padding_mask if encoder_out is not None else None,
