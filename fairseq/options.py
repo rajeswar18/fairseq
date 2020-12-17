@@ -253,6 +253,9 @@ def get_parser(desc, default_task="translation"):
     parser.add_argument('--model-parallel-size', type=int, metavar='N',
                         default=1,
                         help='total number of GPUs to parallelize model over')
+    parser.add_argument('--numfuncs', type=int,
+           default=1,
+           help='total number of function modules')
     parser.add_argument('--checkpoint-suffix', default='',
                         help='suffix to add to the checkpoint file name')
     parser.add_argument('--quantization-config-path', default=None,

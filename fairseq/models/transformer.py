@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from fairseq import options, utils
 from fairseq.models import (
     FairseqEncoder,
@@ -598,7 +599,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         else:
             self.layers = nn.ModuleList([])
         
-        self.num_functions = 2
+        self.num_functions = args.numfuncs
         shared_params = False
         print('sharing params across layers?', shared_params)
         print('num functions?', self.num_functions)
@@ -789,7 +790,6 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             x = self.layernorm_embedding(x)
 
         x = self.dropout_module(x)
-
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
@@ -834,8 +834,12 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 inner_states.append(x_func)
 
                 xfuncs.append(x_func)
-
-            x = xfuncs[0] #TODO: just taking first function for next layer, but should really pick with softmax or something.
+            w = []
+            for func in xfuncs:
+                w.append(layer[0].func_weight_2(F.relu(layer[0].func_weight_1(func))))
+            wts = F.softmax(torch.dstack(w), dim=2)
+            x = torch.einsum('btem,btm->bte', torch.stack(xfuncs, 3), wts)
+            # x = xfuncs[0] # Just picking first function
 
             if layer_attn is not None and idx == alignment_layer:
                 attn = layer_attn.float().to(x)
