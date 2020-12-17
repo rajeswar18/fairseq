@@ -610,7 +610,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 [nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=layer_ind) for _ in range(self.num_functions)]) for layer_ind in range(0,2)]
             )
 
-            shared_layer = nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=2)] for _ in range(self.num_functions))
+            shared_layer = nn.ModuleList([self.build_decoder_layer(args, no_encoder_attn, layer_ind=2) for _ in range(self.num_functions)])
 
             for k in range(2, args.decoder_layers):
                 self.layers.extend([shared_layer])
@@ -836,7 +836,9 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 xfuncs.append(x_func)
             w = []
             for func in xfuncs:
+                # fun is 512x4x512 > 512x4x256 > 512x4x1
                 w.append(layer[0].func_weight_2(F.relu(layer[0].func_weight_1(func))))
+            # 512 x 4 x numfuncs
             wts = F.softmax(torch.dstack(w), dim=2)
             x = torch.einsum('btem,btm->bte', torch.stack(xfuncs, 3), wts)
             # x = xfuncs[0] # Just picking first function
