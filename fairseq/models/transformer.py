@@ -31,7 +31,7 @@ from fairseq.modules import (
 )
 from fairseq.modules.quant_noise import quant_noise as apply_quant_noise_
 from torch import Tensor
-
+import torch.nn.functional as F
 
 DEFAULT_MAX_SOURCE_POSITIONS = 1024
 DEFAULT_MAX_TARGET_POSITIONS = 1024
@@ -551,7 +551,8 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         embed_dim = args.decoder_embed_dim
         self.embed_dim = embed_dim
         self.output_embed_dim = args.decoder_output_dim
-
+        self.use_softmax = args.use_softmax
+        self.use_gumbel_softmax = args.use_gumbel_softmax
 
 
         self.padding_idx = embed_tokens.padding_idx
@@ -600,7 +601,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             self.layers = nn.ModuleList([])
         
         self.num_functions = args.numfuncs
-        shared_params = False
+        shared_params = args.share_parameters
         print('sharing params across layers?', shared_params)
         print('num functions?', self.num_functions)
 
@@ -834,14 +835,20 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 inner_states.append(x_func)
 
                 xfuncs.append(x_func)
-            w = []
-            for func in xfuncs:
-                # fun is 512x4x512 > 512x4x256 > 512x4x1
-                w.append(func.func_weight(func))
-            # 512 x 4 x numfuncs
-            wts = F.softmax(torch.dstack(w), dim=2)
-            x = torch.einsum('btem,btm->bte', torch.stack(xfuncs, 3), wts)
-            # x = xfuncs[0] # Just picking first function
+            if self.use_softmax:
+                w = []
+                for func in xfuncs:
+                    w.append(layer[0].func_weight(func))
+                wts = F.softmax(torch.dstack(w), dim=2)
+                x = torch.einsum('btem,btm->bte', torch.stack(xfuncs, 3), wts)
+            elif self.use_gumbel_softmax:
+                w = []
+                for func in xfuncs:
+                    w.append(layer[0].func_weight(func))
+                wts = F.gumbel_softmax(torch.dstack(w), dim=2)
+                x = torch.einsum('btem,btm->bte', torch.stack(xfuncs, 3), wts)
+            else:
+                x = xfuncs[0] # Just picking first function
 
             if layer_attn is not None and idx == alignment_layer:
                 attn = layer_attn.float().to(x)
