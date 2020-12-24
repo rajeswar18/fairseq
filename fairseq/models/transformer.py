@@ -814,7 +814,20 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 func.vlst = vlst
                 func.memory_obj = memory_obj
 
-        for idx, layer in enumerate(self.layers):
+        if self.training:
+            execution_depth = len(self.layers)
+        else:
+            extra_steps = 5
+            execution_depth = len(self.layers) + extra_steps
+
+
+
+        for idx in range(0, execution_depth):
+
+            if idx >= len(self.layers):
+                idx = len(self.layers) - 1
+
+            layer = self.layers[idx]
             if incremental_state is None and not full_context_alignment:
                 self_attn_mask = self.buffered_future_mask(x)
             else:
